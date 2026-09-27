@@ -115,17 +115,19 @@ export default function Workspace({ t, role, dark, lang, tick, go }) {
   const wide = useMedia('(min-width: 64rem)')
   const xl = useMedia('(min-width: 80rem)')
   const [items, setItems] = useState(null), [sel, setSel] = useState(null), [pick, setPick] = useState(null), [open, setOpen] = useState(false)
-  const [city, setCity] = useState(null), [infra, setInfra] = useState([])
+  const [city, setCity] = useState(null), [infra, setInfra] = useState([]), [cityData, setCityData] = useState(null)
   // Item 2: the forester feed keeps near-misses (CLEAR) and no-GPS rows; MCHS only sees actionable fires.
   const reload = useCallback(() => {
     const path = role === 'forester' ? '/incidents?include_clear=1' : staff ? '/incidents' : '/incidents/public'
     return api(path).then(setItems).catch(() => setItems((x) => x ?? []))
   }, [staff, role])
   useEffect(() => { reload(); const id = setInterval(reload, 30000); return () => clearInterval(id) }, [reload, tick])
-  useEffect(() => {
-    if (!city) { setInfra([]); return }
-    api(`/geo/infrastructure?lat=${city.lat}&lon=${city.lon}`).then((d) => setInfra(d.facilities || [])).catch(() => setInfra([]))
-  }, [city])
+useEffect(() => {
+  if (!city) { setInfra([]); setCityData(null); return }
+  api(`/geo/infrastructure?lat=${city.lat}&lon=${city.lon}`)
+    .then((d) => { setInfra(d.facilities || []); setCityData(d) })
+    .catch(() => { setInfra([]); setCityData(null) })
+}, [city])
   const [focus, setFocus] = useState(null)  // { lat, lon, zoom }
   useEffect(() => {
     const i = (items || []).find((x) => x.id === sel)
@@ -153,6 +155,7 @@ export default function Workspace({ t, role, dark, lang, tick, go }) {
           <CityInfoPanel
             t={t}
             place={city}
+            data={cityData}
             onClose={() => setCity(null)}
             onFocus={(lat, lon, zoom = 16) => setFocus({ lat, lon, zoom })}
           />

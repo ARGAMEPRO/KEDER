@@ -1,7 +1,5 @@
-import { useEffect, useState } from 'react'
 import { motion } from 'framer-motion'
 import { Ambulance, Atom, Baby, Building2, Cross, Droplets, Factory, Flame, Hospital, Landmark, Loader2, Pill, Plane, Radiation, School, Shield, TriangleAlert, Waves, Wind, Zap } from 'lucide-react'
-import { api } from '../api'
 import { Card, spring } from '../ui'
 
 const KIND_META = {
@@ -30,13 +28,7 @@ const KIND_META = {
 
 
 
-export default function CityInfoPanel({ t, place, onClose, onFocus }) {
-  const [data, setData] = useState(null), [err, setErr] = useState('')
-  useEffect(() => {
-    if (!place) { setData(null); return }
-    setErr(''); setData(null)
-    api(`/geo/infrastructure?lat=${place.lat}&lon=${place.lon}`).then(setData).catch((e) => setErr(e.message))
-  }, [place])
+export default function CityInfoPanel({ t, place, data, onClose, onFocus }) {
   if (!place) return null
   const title = place.name.split(', ')[0]
   return (
@@ -50,8 +42,7 @@ export default function CityInfoPanel({ t, place, onClose, onFocus }) {
         </div>
         <button type="button" onClick={onClose} className="min-h-11 shrink-0 cursor-pointer rounded-full px-3 text-sm font-semibold text-muted-foreground hover:bg-muted">{t.close}</button>
       </div>
-      {!data && !err && <div className="flex items-center gap-2 text-sm text-muted-foreground"><Loader2 className="h-4 w-4 animate-spin" aria-hidden />{t.city_loading}</div>}
-      {err && <p role="alert" className="text-sm text-destructive">{err}</p>}
+      {!data && <div className="flex items-center gap-2 text-sm text-muted-foreground"><Loader2 className="h-4 w-4 animate-spin" aria-hidden />{t.city_loading}</div>}
       {data && (
         <>
           {data.region && <p className="text-sm text-muted-foreground">{data.region}</p>}
