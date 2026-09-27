@@ -1,0 +1,46 @@
+# --- Секреты и окружение ---
+.env
+*.env
+!.env.example
+backend/.env
+frontend/.env
+
+# --- Данные БД и загрузки ---
+backend/data/kedr.db
+*.db
+*.sqlite
+*.sqlite3
+backend/uploads/**
+!backend/uploads/
+!backend/uploads/**/
+!backend/uploads/**/.gitkeep
+
+# --- Веса моделей (тяжёлые, качаются отдельно) ---
+backend/weights/**
+!backend/weights/.gitkeep
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.venv/
+venv/
+env/
+
+# --- Node ---
+node_modules/
+frontend/dist/
+frontend/.vite/
+*.lock
+!package-lock.json
+
+# --- IDE / OS ---
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# --- Логи ---
+*.log
+logs/repomix-2.xml

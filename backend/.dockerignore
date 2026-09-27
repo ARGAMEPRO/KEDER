@@ -1,0 +1,7 @@
+__pycache__
+*.pyc
+runs
+kedr.db
+uploads/images/*
+uploads/false_positives/*
+!uploads/**/.gitkeep

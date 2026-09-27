@@ -1,0 +1,28 @@
+export const dict = {
+  ru: {
+    tag: 'Мониторинг лесных пожаров', login: 'Войти', logout: 'Выйти', email: 'Эл. почта', password: 'Пароль',
+    demo: 'Демо-доступ', report: 'Сообщить о пожаре', upload: 'Фото или видео', send: 'Отправить',
+    geo: 'Моя геопозиция', geoFail: 'Не удалось определить геопозицию', map: 'Карта очагов',
+    pending: 'Ожидают проверки', confirm: 'Подтвердить', falseAlarm: 'Ложная тревога', hot: 'Активные очаги',
+    copy: 'Скопировать GPS', nav: 'Открыть в навигаторе', pdf: 'Отчёт PDF', manual: 'Новый инцидент',
+    create: 'Создать', wind: 'Ветер', temp: 'Температура', hum: 'Влажность', evac: 'Под угрозой',
+    pop: 'Население', dist: 'км', az: 'Азимут', empty: 'Записей нет', alarm: 'КРИТИЧЕСКАЯ ТРЕВОГА',
+    dismiss: 'Закрыть', fallback: 'метеоданные по умолчанию', conf: 'Уверенность', role_forester: 'Лесничий',
+    role_mchs: 'Диспетчер МЧС', role_citizen: 'Гражданин', wait: 'Подождите…',
+    s_CLEAR: 'Чисто', s_PENDING_VERIFICATION: 'Ожидает проверки', s_CRITICAL_ALERT: 'Критический очаг',
+    s_CONFIRMED: 'Подтверждён', s_FALSE_ALARM: 'Ложная тревога',
+  },
+  en: {
+    tag: 'Forest fire monitoring', login: 'Sign in', logout: 'Sign out', email: 'Email', password: 'Password',
+    demo: 'Demo access', report: 'Report a fire', upload: 'Photo or video', send: 'Submit',
+    geo: 'My location', geoFail: 'Could not get your location', map: 'Hotspot map',
+    pending: 'Awaiting review', confirm: 'Confirm', falseAlarm: 'False alarm', hot: 'Active hotspots',
+    copy: 'Copy GPS', nav: 'Open in navigator', pdf: 'PDF report', manual: 'New incident',
+    create: 'Create', wind: 'Wind', temp: 'Temperature', hum: 'Humidity', evac: 'Threatened',
+    pop: 'Population', dist: 'km', az: 'Bearing', empty: 'No records', alarm: 'CRITICAL ALERT',
+    dismiss: 'Dismiss', fallback: 'default weather values', conf: 'Confidence', role_forester: 'Forester',
+    role_mchs: 'MCHS dispatcher', role_citizen: 'Citizen', wait: 'Please wait…',
+    s_CLEAR: 'Clear', s_PENDING_VERIFICATION: 'Pending review', s_CRITICAL_ALERT: 'Critical fire',
+    s_CONFIRMED: 'Confirmed', s_FALSE_ALARM: 'False alarm',
+  },
+}

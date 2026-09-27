@@ -1,0 +1,23 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+@layer base {
+  :root {
+    --nav: 4rem; --background: 250 249 246; --foreground: 49 87 44; --card: 255 255 255; --muted: 246 247 220;
+    --muted-fg: 79 119 48; --border: 144 169 85; --primary: 49 87 44; --primary-fg: 250 249 246; --accent: 236 243 158;
+    --destructive: 213 37 24; --ring: 49 87 44; --brand: 49 87 44;
+  }
+  .dark {
+    --background: 53 53 53; --foreground: 250 249 246; --card: 52 62 51; --muted: 60 74 56; --muted-fg: 212 220 170;
+    --border: 79 119 48; --primary: 144 169 85; --primary-fg: 53 53 53; --accent: 49 87 44; --ring: 255 201 38;
+  }
+  body { @apply bg-background font-sans text-foreground antialiased; }
+  :focus-visible { @apply outline-none ring-2 ring-ring ring-offset-2 ring-offset-background; }
+}
+@layer components {
+  .field { @apply min-h-11 w-full rounded-xl border border-border/60 bg-card px-4 text-sm text-foreground; }
+  .label-micro { @apply font-mono text-micro uppercase text-muted-foreground; }
+  .pb-safe { padding-bottom: env(safe-area-inset-bottom); }
+}
+.maplibregl-popup-content { font-family: 'JetBrains Mono', monospace; color: rgb(49 87 44); }
+.dark .maplibregl-popup-content { color: rgb(250 249 246); }

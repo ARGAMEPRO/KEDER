@@ -1,0 +1,33 @@
+services:
+  backend:
+    build: ./backend
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      DATABASE_URL: sqlite:////backend/data/kedr.db
+      MAX_VIDEO_SECONDS: "60"
+    ports: ["8000:8000"]
+    volumes:
+      - ./backend/uploads:/backend/uploads
+      - ./backend/weights:/backend/weights
+      - kedr-db:/backend/data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request as u; u.urlopen('http://localhost:8000/api/v1/health', timeout=3)"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 40s
+    # deploy: *gpu  # Закомментировано для запуска на CPU (macOS)
+    restart: unless-stopped
+
+  frontend:
+    build: ./frontend
+    ports: ["5173:80"]
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  kedr-db:
