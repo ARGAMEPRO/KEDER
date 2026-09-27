@@ -710,7 +710,7 @@ async def geo_context(lat: float, lon: float, radius_m: int):
     """Item 4/7: weather, region, infrastructure and fuel zone for a point, all fetched in parallel."""
     check_bbox(lat, lon)
     radius_m = max(2000, min(int(radius_m), 30000))
-    hazard_radius_m = max(radius_m, 50000)
+    hazard_radius_m = max(radius_m, int(os.getenv("HAZARD_RADIUS_M", 50000)))
     (facilities, src), (wx, _), (region, _), near = await asyncio.gather(
         sv.infrastructure_near(lat, lon, radius_m, hazard_radius_m), sv.weather(lat, lon),
         sv.reverse_geocode(lat, lon), sv.nearby(lat, lon, radius_m))
