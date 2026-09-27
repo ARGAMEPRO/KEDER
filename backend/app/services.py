@@ -14,6 +14,7 @@ import cv2
 import httpx
 from PIL import Image
 from shapely.geometry import MultiPoint, Point, Polygon, LineString, mapping
+from shapely.geometry import box
 
 try:
     import osmnx as ox
@@ -815,7 +816,19 @@ def _ca_spread(lat, lon, ros_head, ecc, down_deg, burn_min, cell=100.0, fuel="fo
                 pts.append((lon + (x + ox) / m_lon, lat + (y + oy) / m_lat))
     if len(pts) < 3:
         return Polygon(), cells_data
-    hull = MultiPoint(pts).convex_hull
+    
+    from shapely.ops import unary_union
+    hull = unary_union(cells_polys) if cells_polys else Polygon()
+
+    cells_polys = []
+    for xi, yi in burned:
+        x = (xi - c0) * cell
+        y = (yi - c0) * cell
+        lon_min = lon + (x - cell / 2) / m_lon
+        lon_max = lon + (x + cell / 2) / m_lon
+        lat_min = lat + (y - cell / 2) / m_lat
+        lat_max = lat + (y + cell / 2) / m_lat
+        cells_polys.append(box(lon_min, lat_min, lon_max, lat_max))
     return hull if not hull.is_empty else Polygon(), cells_data
 
 

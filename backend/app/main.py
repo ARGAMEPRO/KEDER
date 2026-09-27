@@ -319,7 +319,7 @@ async def enrich(db: Session, i: Incident):
                             "p_burn": round(p_burn, 3),
                             "overpass_available": src != "local",
                             "terrain": terrain_type,
-                            "cells": cells_data[::max(len(cells_data) // 100, 1)][:100] if cells_data else [],
+                            "cells": cells_data[:2000],
                             "barriers": barriers,
                             "barrier_count": len(barriers),
                             "max_criticality": max_crit,
@@ -367,9 +367,10 @@ async def create_from_analysis(db, res, source, lat, lon, gps, user):
     cv2.imwrite(str(UPLOADS / "images" / f"{stem}.jpg"), raw)
     cv2.imwrite(str(UPLOADS / "images" / f"{stem}_ann.jpg"), ann)
     i.image_path, i.annotated_path = f"images/{stem}.jpg", f"images/{stem}_ann.jpg"
+    db.commit()                                       # ← сохранили то, что есть
     if i.status != Status.CLEAR and lat is not None:
-        await enrich(db, i)
-    db.commit()
+        await enrich(db, i)                           # 3 минуты работы без транзакции
+        db.commit()                                   # ← обновили поля после enrich
     await notify(i)
     return i
 
@@ -456,6 +457,7 @@ async def manual(body: Manual, db: Session = Depends(get_db), user: User = Depen
     i = Incident(source=Source.MANUAL, status=Status.CONFIRMED, confidence=1.0, lat=body.lat, lon=body.lon,
                  gps_source=GpsSource.MANUAL, reporter_id=user.id, detections=[])
     db.add(i)
+    db.commit()
     await enrich(db, i)
     db.commit()
     await notify(i)
@@ -510,6 +512,7 @@ async def manual_photo(
         cv2.imwrite(str(UPLOADS / "images" / f"{stem}.jpg"), raw)
         cv2.imwrite(str(UPLOADS / "images" / f"{stem}_ann.jpg"), ann)
         i.image_path, i.annotated_path = f"images/{stem}.jpg", f"images/{stem}_ann.jpg"
+    db.commit()
     await enrich(db, i)
     db.commit()
     await notify(i)
@@ -597,15 +600,19 @@ async def review(iid: int, body: Review, db: Session = Depends(get_db),
         if i.image_path and src.exists():  # clean image becomes a hard negative for retraining
             shutil.move(src, UPLOADS / "false_positives" / src.name)
             i.image_path = f"false_positives/{src.name}"
+        db.commit()
     elif body.verdict == "confirm":
         i.status = Status.CONFIRMED
+        db.commit()                              # ← статус сохранён до долгого enrich
         if i.hazard_geojson is None and i.lat is not None:
             await enrich(db, i)
+            db.commit()                          # ← сохранить обновлённый hazard_geojson
         # Refresh hazard_geojson if it exists but doesn't have cells data
         elif i.hazard_geojson and isinstance(i.hazard_geojson, dict):
             props = i.hazard_geojson.get("properties", {})
             if "cells" not in props:
                 await enrich(db, i)
+                db.commit()
     else:
         raise HTTPException(422, "verdict must be confirm or false_alarm")
     i.reviewed_by_id, i.reviewed_at = user.id, utcnow()

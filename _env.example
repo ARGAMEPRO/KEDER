@@ -25,13 +25,13 @@ NOMINATIM_USER_AGENT=kedr-fire-monitor/1.0 (contact: keder-test@gmail.com)
 
 # --- Overpass / кэш (item 4: ускорение создания инцидента) ---
 OVERPASS_URLS=https://maps.mail.ru/osm/tools/overpass/api/interpreter
-OVERPASS_TIMEOUT=60              # секунд на запрос к зеркалу; следующее зеркало берётся при ошибке
+OVERPASS_TIMEOUT=20              # секунд на запрос к зеркалу; следующее зеркало берётся при ошибке
 OVERPASS_CONCURRENCY=4           # одновременных запросов к Overpass
 CACHE_MAX=4000                   # максимум записей в in-process TTL-кэше
 WEATHER_TTL=600                  # сек: кэш погоды Open-Meteo
 GEOCODE_TTL=86400                # сек: кэш обратного геокодирования Nominatim
-NEAR_TTL=1800                    # сек: кэш населённых пунктов и landuse (nearby)
-INFRA_TTL=1800                   # сек: кэш объектов инфраструктуры (item 7)
+NEAR_TTL=86400                    # сек: кэш населённых пунктов и landuse (nearby)
+INFRA_TTL=86400                   # сек: кэш объектов инфраструктуры (item 7)
 SEARCH_TTL=3600                  # сек: кэш поиска населённых пунктов
 CLEAR_DEDUPE_KM=0.5              # км: радиус схлопывания повторных CLEAR-детекций
 

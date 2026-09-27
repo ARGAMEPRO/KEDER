@@ -2,13 +2,27 @@
 import enum
 import os
 from datetime import datetime, timezone
+from sqlalchemy import event
 
 from sqlalchemy import JSON, DateTime, Enum, Float, ForeignKey, Integer, String, create_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship, sessionmaker
 
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./kedr.db")
-_connect_args = {"check_same_thread": False} if DATABASE_URL.startswith("sqlite") else {}
+_connect_args = (
+    {"check_same_thread": False, "timeout": 30}
+    if DATABASE_URL.startswith("sqlite") else {}
+)
 engine = create_engine(DATABASE_URL, connect_args=_connect_args, pool_pre_ping=True)
+
+if DATABASE_URL.startswith("sqlite"):
+    @event.listens_for(engine, "connect")
+    def _sqlite_pragma(dbapi_conn, _):
+        cur = dbapi_conn.cursor()
+        cur.execute("PRAGMA journal_mode=WAL")       # читатели не блокируют писателя
+        cur.execute("PRAGMA synchronous=NORMAL")     # быстрее, приемлемо для не-банка
+        cur.execute("PRAGMA busy_timeout=30000")     # ждать 30 с вместо мгновенного фейла
+        cur.close()
+
 SessionLocal = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
 
 TIER_PENDING = float(os.getenv("TIER_PENDING", 0.40))
