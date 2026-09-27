@@ -102,14 +102,11 @@ def exif_gps(path):
         return None
 
 
-UA = {"User-Agent": os.getenv("NOMINATIM_USER_AGENT", "kedr-fire-monitor/1.0")}
+UA = {"User-Agent": os.getenv("NOMINATIM_USER_AGENT", "kedr-fire-monitor/1.0 (contact: your-email@example.org)")}
 # Public Overpass mirrors, tried in order. `overpass-api.de` is the reference instance.
 OVERPASS = [u.strip() for u in os.getenv(
     "OVERPASS_URLS",
     "https://overpass-api.de/api/interpreter,"
-    "https://overpass.kumi.systems/api/interpreter,"
-    "https://overpass.private.coffee/api/interpreter,"
-    "https://overpass.osm.ch/api/interpreter,"
     "https://maps.mail.ru/osm/tools/overpass/api/interpreter",
 ).split(",") if u.strip()]
 OVERPASS_TIMEOUT = float(os.getenv("OVERPASS_TIMEOUT", 10))
