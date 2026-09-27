@@ -937,13 +937,21 @@ _INFRA_EMERGENCY_Q = """[out:json][timeout:{t}];
 out tags center 300;"""
 
 # Energy and hazardous objects — SPECIAL radius, 50 km
+# Реально опасные объекты: АЭС, ГЭС, НПЗ, химзаводы. Радиус 30 км — они редкие.
+_INFRA_CRITICAL_Q = """[out:json][timeout:{t}];
+(
+  nwr["power"="plant"]["plant:source"~"^(nuclear|hydro)$"](around:{r},{lat},{lon});
+  nwr["man_made"="works"]["industrial"~"^(refinery|chemical|oil|gas)$"](around:{r},{lat},{lon});
+  nwr["man_made"="works"]["product"~"^(oil|gas|chemical)$"](around:{r},{lat},{lon});
+  nwr["hazard"~"^(chemical|nuclear|radiological|explosive)$"](around:{r},{lat},{lon});
+);
+out tags center 200;"""
+
+# Обычные энерго- и транспортные объекты. Радиус 15 км — их много, тянуть с 50 бессмысленно.
 _INFRA_HAZARD_Q = """[out:json][timeout:{t}];
 (
   nwr["power"="plant"](around:{r},{lat},{lon});
   nwr["power"="substation"]["voltage"~"^(110000|220000|330000|500000|750000)$"](around:{r},{lat},{lon});
-  nwr["man_made"="works"]["industrial"~"^(refinery|chemical|oil|gas)$"](around:{r},{lat},{lon});
-  nwr["man_made"="works"]["product"~"^(oil|gas|chemical)$"](around:{r},{lat},{lon});
-  nwr["hazard"~"^(chemical|nuclear|radiological|explosive)$"](around:{r},{lat},{lon});
   nwr["aeroway"="aerodrome"](around:{r},{lat},{lon});
   nwr["aeroway"="helipad"](around:{r},{lat},{lon});
 );
@@ -1049,11 +1057,14 @@ def infra_kind(tg):
 
 async def infrastructure_near(lat, lon, radius_m=15000, hazard_radius_m=50000):
     """
-    Critical infrastructure: 3 parallel Overpass queries,
-    deduplication by (kind, rounded coordinates), sorting by criticality ↓, distance ↑.
+    Critical infrastructure: 4 parallel Overpass queries.
+    Critical (АЭС/ГЭС/НПЗ) — в CRITICAL_RADIUS_M (30 км),
+    обычные (ТЭЦ/подстанции/аэродромы) — в HAZARD_RADIUS_M (15 км).
+    Дедупликация по (type, id), сортировка: criticality ↓, distance ↑.
     """
     radius_m = max(2000, min(int(radius_m), 30000))
     hazard_radius_m = max(radius_m, min(int(hazard_radius_m), 80000))
+    critical_radius_m = max(radius_m, min(int(os.getenv("CRITICAL_RADIUS_M", 30000)), 80000))
     t = int(OVERPASS_TIMEOUT)
 
     async def q(query, key, r, ttl=1800):
@@ -1064,11 +1075,12 @@ async def infrastructure_near(lat, lon, radius_m=15000, hazard_radius_m=50000):
             timeout=t + 5,
         )
 
-    # three parallel queries
+    # четыре параллельных запроса
     results = await asyncio.gather(
-        q(_INFRA_MEDICAL_Q,   "infra-med",  radius_m),
-        q(_INFRA_EMERGENCY_Q, "infra-em",   radius_m),
-        q(_INFRA_HAZARD_Q,    "infra-haz",  hazard_radius_m),
+        q(_INFRA_MEDICAL_Q,   "infra-med",      radius_m),
+        q(_INFRA_EMERGENCY_Q, "infra-em",       radius_m),
+        q(_INFRA_CRITICAL_Q,  "infra-critical", critical_radius_m),  # ← новое
+        q(_INFRA_HAZARD_Q,    "infra-haz",      hazard_radius_m),    # ← теперь 15км
         return_exceptions=True,
     )
 
@@ -1103,7 +1115,6 @@ async def infrastructure_near(lat, lon, radius_m=15000, hazard_radius_m=50000):
                 "name": tg.get("name:ru") or tg.get("name") or tg.get("operator") or "?",
                 "lat": la, "lon": lo,
                 "distance_km": round(d, 2),
-                # useful details
                 "beds": _to_int(tg.get("beds")),
                 "capacity": _to_int(tg.get("capacity")),
                 "emergency": tg.get("emergency") == "yes" or tg.get("emergency") == "designated",
@@ -1113,11 +1124,9 @@ async def infrastructure_near(lat, lon, radius_m=15000, hazard_radius_m=50000):
                 "operator": tg.get("operator"),
             })
 
-    # sorting: criticality DESC, distance ASC
     rows.sort(key=lambda r: (-r["criticality"], r["distance_km"]))
 
-    # Return source status: osm (all good), partial (some failed), none (all failed)
-    if sources_ok == 3:
+    if sources_ok == 4:
         src = "osm"
     elif sources_ok > 0:
         src = "partial"

@@ -229,6 +229,20 @@ async def ws_alerts(ws: WebSocket, token: str = ""):
 def out(i: Incident):
     return {c.name: getattr(i, c.name) for c in i.__table__.columns}
 
+def _classify_fuel_with_fallback(db: Session, lat: float, lon: float, near: dict) -> str:
+    """classify_fuel + fallback на локальную БД, если Overpass вернул пусто."""
+    fuel = sv.classify_fuel(lat, lon, near)
+    if not near.get("landuse") and not near.get("places"):
+        big = [s for s in db.query(Settlement).filter(Settlement.population >= 20000).all()
+               if sv.haversine_km(lat, lon, s.lat, s.lon) <= 15]
+        if big:
+            fuel = "urban"
+        else:
+            near_any = [s for s in db.query(Settlement).all()
+                        if sv.haversine_km(lat, lon, s.lat, s.lon) <= 30]
+            fuel = "mixed" if near_any else "forest"
+    return fuel
+
 
 async def enrich(db: Session, i: Incident):
     """Weather + region + OSM context in parallel; picks the fuel zone and builds the spread polygon."""
@@ -251,18 +265,9 @@ async def enrich(db: Session, i: Incident):
                 i.region_name = f"{nearest.region}, {nearest.name} (~{d:.0f} км)"
     if cc and cc != "ru":
         raise HTTPException(422, "Точка находится вне России")
-    fuel = sv.classify_fuel(i.lat, i.lon, near)
-# Если Overpass не ответил — классифицируем по локальной БД городов
-    if not near.get("landuse") and not near.get("places"):
-        big = [s for s in db.query(Settlement).filter(Settlement.population >= 20000).all()
-            if sv.haversine_km(i.lat, i.lon, s.lat, s.lon) <= 15]
-        if big:
-            fuel = "urban"
-        else:
-            near_any = [s for s in db.query(Settlement).all()
-                        if sv.haversine_km(i.lat, i.lon, s.lat, s.lon) <= 30]
-            fuel = "mixed" if near_any else "forest"
+    fuel = _classify_fuel_with_fallback(db, i.lat, i.lon, near)
     print(f"[kedr] enrich: fuel type = {fuel}, places from OSM = {len(near.get('places', []))}")
+# Если Overpass не ответил — классифицируем по локальной БД городов
     # Calculate additional fire spread metrics
     burn_minutes = sv._FUEL.get(fuel, sv._FUEL["forest"])["burn"]
     ros = sv.rothermel_ros(fuel, i.wind_speed_ms, None, i.humidity_pct, i.temp_c)
@@ -283,26 +288,21 @@ async def enrich(db: Session, i: Incident):
     src = near.get("source", "none")
 
     # 1) settlements inside fire polygon + 3km buffer
-    selected, picked = sv.select_places(poly, places_osm, i.lat, i.lon, extra_km=30)
+    selected, picked = sv.select_places(poly, places_osm, i.lat, i.lon, extra_km=0)
 
-    # 2) if polygon didn't cover anyone (or OSM empty) — take nearest within 30km
+        # 2) fallback: города внутри полигона + 1 км
     if not selected:
-        # try local seed
+        from shapely.geometry import Point as _P
+        padded = poly.buffer(1.0 / 111.32)  # 1 км от границы полигона
         local = [
             {"name": s.name, "lat": s.lat, "lon": s.lon,
              "type": "city", "population": s.population}
             for s in db.query(Settlement).all()
-            if sv.haversine_km(i.lat, i.lon, s.lat, s.lon) <= 30
+            if padded.covers(_P(s.lon, s.lat))
         ]
-        if local:
-            selected, picked, src = local, "local", "local"
-        else:
-            # last resort — take nearest OSM within 30km, even if outside polygon
-            near30 = sorted(
-                places_osm,
-                key=lambda p: sv.haversine_km(i.lat, i.lon, p["lat"], p["lon"]),
-            )[:10]
-            selected, picked = near30, "nearby"
+        selected = local
+        picked = "zone" if local else "none"
+        src = "local" if local else "none"
 
     i.evacuation = sv.evacuation_plan(poly, i.lat, i.lon, selected, facilities, i.wind_dir_deg)
 
@@ -706,7 +706,22 @@ async def geo_weather(lat: float, lon: float):
     return {"ok": w is not None, "data": w, "error": err}
 
 
-async def geo_context(lat: float, lon: float, radius_m: int):
+def _classify_fuel_with_fallback(db: Session, lat: float, lon: float, near: dict) -> str:
+    """classify_fuel + fallback на локальную БД, если Overpass вернул пусто."""
+    fuel = sv.classify_fuel(lat, lon, near)
+    if not near.get("landuse") and not near.get("places"):
+        big = [s for s in db.query(Settlement).filter(Settlement.population >= 20000).all()
+               if sv.haversine_km(lat, lon, s.lat, s.lon) <= 15]
+        if big:
+            fuel = "urban"
+        else:
+            near_any = [s for s in db.query(Settlement).all()
+                        if sv.haversine_km(lat, lon, s.lat, s.lon) <= 30]
+            fuel = "mixed" if near_any else "forest"
+    return fuel
+
+
+async def geo_context(db: Session, lat: float, lon: float, radius_m: int):
     """Item 4/7: weather, region, infrastructure and fuel zone for a point, all fetched in parallel."""
     check_bbox(lat, lon)
     radius_m = max(2000, min(int(radius_m), 30000))
@@ -735,13 +750,13 @@ async def geo_context(lat: float, lon: float, radius_m: int):
         "max_criticality": max_crit,       # 5 = nuclear/hydro/refinery present
         "radius_m": radius_m,
         "hazard_radius_m": hazard_radius_m,
-        "fuel": sv.classify_fuel(lat, lon, near),
+        "fuel": _classify_fuel_with_fallback(db, lat, lon, near),
     }
 
 
 @api.get("/geo/infrastructure")
-async def geo_infrastructure(lat: float, lon: float, radius_m: int = 12000):
-    return await geo_context(lat, lon, radius_m)
+async def geo_infrastructure(lat: float, lon: float, radius_m: int = 12000, db: Session = Depends(get_db)):
+    return await geo_context(db, lat, lon, radius_m)
 
 
 @api.post("/incidents/{iid}/refresh")
