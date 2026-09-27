@@ -246,9 +246,10 @@ def _classify_fuel_with_fallback(db: Session, lat: float, lon: float, near: dict
 
 async def enrich(db: Session, i: Incident):
     """Weather + region + OSM context in parallel; picks the fuel zone and builds the spread polygon."""
+    hazard_radius = int(os.getenv("HAZARD_RADIUS_M", 50000))
     (wx, _err), (region, cc), near, (facilities, _) = await asyncio.gather(
         sv.weather(i.lat, i.lon), sv.reverse_geocode(i.lat, i.lon), sv.nearby(i.lat, i.lon),
-        sv.infrastructure_near(i.lat, i.lon, 15000, 50000))
+        sv.infrastructure_near(i.lat, i.lon, 15000, hazard_radius))
     if wx:
         i.wind_speed_ms, i.wind_dir_deg, i.temp_c, i.humidity_pct = wx["wind_speed_ms"], wx["wind_dir_deg"], wx["temp_c"], wx["humidity_pct"]
     else:
@@ -267,7 +268,6 @@ async def enrich(db: Session, i: Incident):
         raise HTTPException(422, "Точка находится вне России")
     fuel = _classify_fuel_with_fallback(db, i.lat, i.lon, near)
     print(f"[kedr] enrich: fuel type = {fuel}, places from OSM = {len(near.get('places', []))}")
-# Если Overpass не ответил — классифицируем по локальной БД городов
     # Calculate additional fire spread metrics
     burn_minutes = sv._FUEL.get(fuel, sv._FUEL["forest"])["burn"]
     ros = sv.rothermel_ros(fuel, i.wind_speed_ms, None, i.humidity_pct, i.temp_c)
@@ -290,7 +290,7 @@ async def enrich(db: Session, i: Incident):
     # 1) settlements inside fire polygon + 3km buffer
     selected, picked = sv.select_places(poly, places_osm, i.lat, i.lon, extra_km=0)
 
-        # 2) fallback: города внутри полигона + 1 км
+    # 2) fallback: города внутри полигона + 1 км
     if not selected:
         from shapely.geometry import Point as _P
         padded = poly.buffer(1.0 / 111.32)  # 1 км от границы полигона
@@ -369,7 +369,10 @@ async def create_from_analysis(db, res, source, lat, lon, gps, user):
     i.image_path, i.annotated_path = f"images/{stem}.jpg", f"images/{stem}_ann.jpg"
     db.commit()                                       # ← сохранили то, что есть
     if i.status != Status.CLEAR and lat is not None:
-        await enrich(db, i)                           # 3 минуты работы без транзакции
+        try:
+            await enrich(db, i)                       # 3 минуты работы без транзакции
+        except Exception as e:
+            print(f"[kedr] enrich failed for #{i.id}: {e}", flush=True)
         db.commit()                                   # ← обновили поля после enrich
     await notify(i)
     return i
@@ -458,7 +461,10 @@ async def manual(body: Manual, db: Session = Depends(get_db), user: User = Depen
                  gps_source=GpsSource.MANUAL, reporter_id=user.id, detections=[])
     db.add(i)
     db.commit()
-    await enrich(db, i)
+    try:
+        await enrich(db, i)
+    except Exception as e:
+        print(f"[kedr] enrich failed for #{i.id}: {e}", flush=True)
     db.commit()
     await notify(i)
     return out(i)
@@ -513,7 +519,10 @@ async def manual_photo(
         cv2.imwrite(str(UPLOADS / "images" / f"{stem}_ann.jpg"), ann)
         i.image_path, i.annotated_path = f"images/{stem}.jpg", f"images/{stem}_ann.jpg"
     db.commit()
-    await enrich(db, i)
+    try:
+        await enrich(db, i)
+    except Exception as e:
+        print(f"[kedr] enrich failed for #{i.id}: {e}", flush=True)
     db.commit()
     await notify(i)
     return out(i)
@@ -559,7 +568,10 @@ async def patch_location(iid: int, body: LocationPatch, db: Session = Depends(ge
     if body.note and body.note.strip():
         i.region_name = (i.region_name.split(" · ")[0] + " · " if i.region_name else "") + body.note.strip()[:200]
     if i.status != Status.CLEAR:
-        await enrich(db, i)
+        try:
+            await enrich(db, i)
+        except Exception as e:
+            print(f"[kedr] enrich failed: {e}", flush=True)
     db.commit()
     return out(i)
 
@@ -605,13 +617,18 @@ async def review(iid: int, body: Review, db: Session = Depends(get_db),
         i.status = Status.CONFIRMED
         db.commit()                              # ← статус сохранён до долгого enrich
         if i.hazard_geojson is None and i.lat is not None:
-            await enrich(db, i)
-            db.commit()                          # ← сохранить обновлённый hazard_geojson
-        # Refresh hazard_geojson if it exists but doesn't have cells data
+            try:
+                await enrich(db, i)
+            except Exception as e:
+                print(f"[kedr] enrich failed: {e}", flush=True)
+            db.commit()
         elif i.hazard_geojson and isinstance(i.hazard_geojson, dict):
             props = i.hazard_geojson.get("properties", {})
             if "cells" not in props:
-                await enrich(db, i)
+                try:
+                    await enrich(db, i)
+                except Exception as e:
+                    print(f"[kedr] enrich failed: {e}", flush=True)
                 db.commit()
     else:
         raise HTTPException(422, "verdict must be confirm or false_alarm")

@@ -606,8 +606,8 @@ _FUEL = {
                "IR": 200.0, "xi": 0.1, "rho_b": 0.5, "epsilon": 0.9, "Qig": 250.0},
     "mixed":  {"ros": 30.0, "wind_gain": 0.95, "burn": 170,
                "IR": 150.0, "xi": 0.08, "rho_b": 0.6, "epsilon": 0.85, "Qig": 300.0},
-    "urban":  {"ros": 20.0, "wind_gain": 0.55, "burn": 140,
-               "IR": 100.0, "xi": 0.05, "rho_b": 0.8, "epsilon": 0.7, "Qig": 400.0},
+    "urban":  {"ros": 6.0, "wind_gain": 0.35, "burn": 60,
+               "IR": 40.0, "xi": 0.025, "rho_b": 1.1, "epsilon": 0.55, "Qig": 500.0},
 }
 
 
@@ -663,6 +663,10 @@ def rothermel_ros(fuel_type, wind_ms=None, slope_deg=None, humidity_pct=None, te
 
     # Convert to m/min (typical fire spread units)
     ros *= 60  # Convert from m/s to m/min
+
+    # При экстремальной влажности (>85%) мокрое топливо почти не горит
+    if humidity_pct is not None and humidity_pct > 85:
+        ros *= 0.25
 
     return max(0.1, ros)  # Minimum spread rate
 

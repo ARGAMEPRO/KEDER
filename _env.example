@@ -6,7 +6,7 @@ DATABASE_URL=sqlite:///./kedr.db
 CORS_ORIGINS=http://localhost:5173,http://localhost:3000
 
 # --- Детекция (RTX 3050) ---
-YOLO_WEIGHTS=weights/yolov8x-fire.pt
+YOLO_WEIGHTS=
 YOLO_WEIGHTS_URL=                # необязательно: ссылка на .pt, скачается при первом запуске
 YOLO_DEVICE=cuda:0
 YOLO_HALF=true
@@ -21,7 +21,7 @@ RATE_LIMIT_PER_MIN=10
 # --- Внешние сервисы (без ключей) ---
 OPEN_METEO_URL=https://api.open-meteo.com/v1/forecast
 NOMINATIM_URL=https://nominatim.openstreetmap.org/reverse
-NOMINATIM_USER_AGENT=kedr-fire-monitor/1.0 (contact: keder-test@gmail.com)
+NOMINATIM_USER_AGENT=kedr-fire-monitor/1.0 (contact: change-me@your-domain.com)
 
 # --- Overpass / кэш (item 4: ускорение создания инцидента) ---
 OVERPASS_URLS=https://maps.mail.ru/osm/tools/overpass/api/interpreter
