@@ -205,7 +205,11 @@ function addCustomLayers(m, maskColor) {
 export default function RuMap({ items = [], dark, lang = 'ru', onPick, picked, focus, className = 'h-map', t, onCitySelect, infra = [] }) {
   const el = useRef(), map = useRef(), marks = useRef([]), pin = useRef(), cur = useRef(), pickRef = useRef(onPick)
   const cityRef = useRef(onCitySelect), tRef = useRef(t), ipop = useRef(null)
-  const [failed, setFailed] = useState(false), [ready, setReady] = useState(false), [q, setQ] = useState(''), [res, setRes] = useState([])
+  const [failed, setFailed] = useState(false), [ready, setReady] = useState(false)
+  const [q, setQ] = useState(() => {
+    try { return localStorage.getItem('kedr_search') || '' } catch { return '' }
+  })
+  const [res, setRes] = useState([])
   const [base, setBase] = useState('map')
   pickRef.current = onPick
   cityRef.current = onCitySelect
@@ -279,6 +283,12 @@ export default function RuMap({ items = [], dark, lang = 'ru', onPick, picked, f
   }, [lang, ready])
 
   useEffect(() => {
+  if (!ready) return
+  window.__kedrFlyTo = (lat, lon, zoom = 15) => map.current?.flyTo({ center: [lon, lat], zoom })
+  return () => { delete window.__kedrFlyTo }
+}, [ready])
+
+  useEffect(() => {
     if (!ready) return
     marks.current.forEach((x) => x.remove()); marks.current = []
     items.filter((i) => i.lat != null).forEach((i) => marks.current.push(
@@ -344,17 +354,20 @@ export default function RuMap({ items = [], dark, lang = 'ru', onPick, picked, f
     return () => { clearTimeout(t); ctrl.abort() }
   }, [q])
 
-  useEffect(() => { if (ready && focus) map.current.flyTo({ center: [focus[1], focus[0]], zoom: 11 }) }, [focus, ready])
+  useEffect(() => {
+    if (!ready || !focus) return
+    const { lat, lon, zoom = 11 } = focus
+    map.current.flyTo({ center: [lon, lat], zoom, essential: true })
+  }, [focus, ready])
 
   const go = (r) => {
-    console.log('[kedr] Going to location:', r)
-    if (!map.current) {
-      console.error('[kedr] Map not initialized')
-      return
-    }
+    if (!map.current) return
     try {
       map.current.flyTo({ center: [r.lon, r.lat], zoom: 11 })
-      setRes([]); setQ(r.name.split(', ')[0])
+      const shortName = r.name.split(', ')[0]
+      setRes([])
+      setQ(shortName)
+      try { localStorage.setItem('kedr_search', shortName) } catch {}
       pickRef.current?.([r.lat, r.lon])
       cityRef.current?.(r)
     } catch (e) {
@@ -372,7 +385,21 @@ export default function RuMap({ items = [], dark, lang = 'ru', onPick, picked, f
         <label className="flex items-center gap-2 rounded-full border border-border/60 bg-card/90 px-4 shadow-soft backdrop-blur">
           <Search className="h-4 w-4 shrink-0 text-muted-foreground" aria-hidden />
           <span className="sr-only">{t?.search_ph}</span>
-          <input className="min-h-11 w-full border-0 bg-transparent px-0 text-sm outline-none" placeholder={t?.search_ph} value={q} onChange={(e) => setQ(e.target.value)} />
+          <input
+            className="min-h-11 w-full border-0 bg-transparent px-0 text-sm outline-none"
+            placeholder={t?.search_ph}
+            value={q}
+            onChange={(e) => {
+              setQ(e.target.value)
+              try { localStorage.setItem('kedr_search', e.target.value) } catch {}
+            }}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && res.length > 0) {
+                e.preventDefault()
+                go(res[0])
+              }
+            }}
+          />
         </label>
         <AnimatePresence>
           {res.length > 0 && (

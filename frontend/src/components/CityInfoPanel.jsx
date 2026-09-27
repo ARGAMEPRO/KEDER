@@ -30,7 +30,7 @@ const KIND_META = {
 
 
 
-export default function CityInfoPanel({ t, place, onClose }) {
+export default function CityInfoPanel({ t, place, onClose, onFocus }) {
   const [data, setData] = useState(null), [err, setErr] = useState('')
   useEffect(() => {
     if (!place) { setData(null); return }
@@ -87,15 +87,18 @@ export default function CityInfoPanel({ t, place, onClose }) {
                         </summary>
                         <ul className="border-t border-border/30 p-2 text-sm">
                           {items.map((f, i) => (
-                            <li key={i} className="flex items-center gap-2 px-2 py-1">
+                            <li
+                              key={i}
+                              onClick={() => onFocus?.(f.lat, f.lon, 16)}
+                              className="flex cursor-pointer items-center gap-2 rounded px-2 py-1 hover:bg-muted"
+                              title="Показать на карте"
+                            >
                               <span className="truncate">{f.name}</span>
-                              <span className="ml-auto font-mono text-xs text-muted-foreground">
-                                {f.distance_km} км
-                              </span>
+                              <span className="ml-auto font-mono text-xs text-muted-foreground">{f.distance_km} км</span>
                               {f.beds && <span className="font-mono text-xs">🛏 {f.beds}</span>}
                               {f.emergency && <span className="text-red-500" title="Круглосуточно">●</span>}
                               {f.phone && (
-                                <a href={`tel:${f.phone}`} className="font-mono text-xs underline">
+                                <a href={`tel:${f.phone}`} onClick={(e) => e.stopPropagation()} className="font-mono text-xs underline">
                                   {f.phone}
                                 </a>
                               )}

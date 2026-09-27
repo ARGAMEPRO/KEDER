@@ -20,4 +20,3 @@
   .pb-safe { padding-bottom: env(safe-area-inset-bottom); }
 }
 .maplibregl-popup-content { font-family: 'JetBrains Mono', monospace; color: rgb(49 87 44); }
-.dark .maplibregl-popup-content { color: rgb(250 249 246); }

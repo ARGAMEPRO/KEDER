@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { AnimatePresence, motion, useDragControls } from 'framer-motion'
 import { Check, Flame, MapPinOff, Trash2, X } from 'lucide-react'
 import { api } from './api'
@@ -126,7 +126,11 @@ export default function Workspace({ t, role, dark, lang, tick, go }) {
     if (!city) { setInfra([]); return }
     api(`/geo/infrastructure?lat=${city.lat}&lon=${city.lon}`).then((d) => setInfra(d.facilities || [])).catch(() => setInfra([]))
   }, [city])
-  const focus = useMemo(() => { const i = (items || []).find((x) => x.id === sel); return i?.lat != null ? [i.lat, i.lon] : null }, [sel, items])
+  const [focus, setFocus] = useState(null)  // { lat, lon, zoom }
+  useEffect(() => {
+    const i = (items || []).find((x) => x.id === sel)
+    if (i?.lat != null) setFocus({ lat: i.lat, lon: i.lon, zoom: 11 })
+  }, [sel, items])
   const select = (id) => { setSel(id); setOpen(false) }
   const canPick = role === 'mchs' || role === 'forester'
   const panel = role === 'mchs' ? <MchsPanel t={t} items={items} setSel={select} pick={pick} reload={reload} role={role} />
@@ -144,7 +148,16 @@ export default function Workspace({ t, role, dark, lang, tick, go }) {
       {wide && <aside className="min-h-0 space-y-4 overflow-y-auto border-r border-border/50 p-4">{panel}</aside>}
       <RuMap items={items || []} dark={dark} lang={lang} t={t} focus={focus} onPick={canPick ? setPick : undefined} picked={pick}
         onCitySelect={role === 'mchs' ? setCity : undefined} infra={role === 'mchs' ? infra : []} className="h-full rounded-none border-0" />
-      <AnimatePresence>{showCity && <CityInfoPanel t={t} place={city} onClose={() => setCity(null)} />}</AnimatePresence>
+      <AnimatePresence>
+        {showCity && (
+          <CityInfoPanel
+            t={t}
+            place={city}
+            onClose={() => setCity(null)}
+            onFocus={(lat, lon, zoom = 16) => setFocus({ lat, lon, zoom })}
+          />
+        )}
+      </AnimatePresence>
       {!wide && <Sheet open={open} setOpen={setOpen} title={t.peek}>{panel}</Sheet>}
     </div>
   )
