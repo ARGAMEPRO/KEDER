@@ -241,9 +241,27 @@ async def enrich(db: Session, i: Incident):
         i.wind_speed_ms = i.wind_dir_deg = i.temp_c = i.humidity_pct = None
     i.weather_fallback = 0 if wx else 1  # 1 = weather unavailable (never filled with fake values)
     i.region_name = region
+    if not i.region_name and i.lat is not None:
+        # Nominatim молчит → берём ближайший известный город из локальной БД
+        candidates = db.query(Settlement).all()
+        if candidates:
+            nearest = min(candidates, key=lambda s: sv.haversine_km(i.lat, i.lon, s.lat, s.lon))
+            d = sv.haversine_km(i.lat, i.lon, nearest.lat, nearest.lon)
+            if d <= 50:
+                i.region_name = f"{nearest.region}, {nearest.name} (~{d:.0f} км)"
     if cc and cc != "ru":
         raise HTTPException(422, "Точка находится вне России")
-    fuel = sv.classify_fuel(i.lat, i.lon, near)  # item 6: city vs forest fuel zone
+    fuel = sv.classify_fuel(i.lat, i.lon, near)
+# Если Overpass не ответил — классифицируем по локальной БД городов
+    if not near.get("landuse") and not near.get("places"):
+        big = [s for s in db.query(Settlement).filter(Settlement.population >= 20000).all()
+            if sv.haversine_km(i.lat, i.lon, s.lat, s.lon) <= 15]
+        if big:
+            fuel = "urban"
+        else:
+            near_any = [s for s in db.query(Settlement).all()
+                        if sv.haversine_km(i.lat, i.lon, s.lat, s.lon) <= 30]
+            fuel = "mixed" if near_any else "forest"
     print(f"[kedr] enrich: fuel type = {fuel}, places from OSM = {len(near.get('places', []))}")
     # Calculate additional fire spread metrics
     burn_minutes = sv._FUEL.get(fuel, sv._FUEL["forest"])["burn"]
@@ -301,7 +319,7 @@ async def enrich(db: Session, i: Incident):
                             "p_burn": round(p_burn, 3),
                             "overpass_available": src != "local",
                             "terrain": terrain_type,
-                            "cells": cells_data[:100],
+                            "cells": cells_data[::max(len(cells_data) // 100, 1)][:100] if cells_data else [],
                             "barriers": barriers,
                             "barrier_count": len(barriers),
                             "max_criticality": max_crit,
