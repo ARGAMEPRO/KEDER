@@ -818,8 +818,6 @@ def _ca_spread(lat, lon, ros_head, ecc, down_deg, burn_min, cell=100.0, fuel="fo
         return Polygon(), cells_data
     
     from shapely.ops import unary_union
-    hull = unary_union(cells_polys) if cells_polys else Polygon()
-
     cells_polys = []
     for xi, yi in burned:
         x = (xi - c0) * cell
@@ -829,6 +827,8 @@ def _ca_spread(lat, lon, ros_head, ecc, down_deg, burn_min, cell=100.0, fuel="fo
         lat_min = lat + (y - cell / 2) / m_lat
         lat_max = lat + (y + cell / 2) / m_lat
         cells_polys.append(box(lon_min, lat_min, lon_max, lat_max))
+
+    hull = unary_union(cells_polys) if cells_polys else MultiPoint(pts).convex_hull
     return hull if not hull.is_empty else Polygon(), cells_data
 
 
