@@ -162,7 +162,8 @@ export function Report({ t, multiple, onDone, canPdf }) {
         done.push(row)
       } catch (e) { setErr(e.message); break }
     }
-    setRes(done); setBusy(false); onDone?.()
+    setRes(done); setBusy(false)
+    setTimeout(() => onDone?.(), 4000)   // ← один раз, после цикла
   }
   return (
     <div className="space-y-4">

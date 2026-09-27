@@ -49,7 +49,7 @@ export const extra = {
     infra_nuclear: 'АЭС', infra_hydro_dam: 'ГЭС', infra_refinery: 'НПЗ', infra_chemical: 'Химзавод',
     infra_airport: 'Аэродром', infra_power_plant: 'Электростанция', infra_substation: 'Подстанция', infra_helipad: 'Вертодром',
     verdict_title: '3. Решение диспетчера', verdict_hint: 'Нейросеть не уверена — подтвердите пожар или поднимите критическую тревогу.',
-    verdict_confirm: 'Подтвердить пожар', verdict_critical: 'Критическая тревога',
+    verdict_confirm: 'Обычный пожар', verdict_critical: 'Критическая тревога',
   },
   en: {
     map_fail: 'The map could not start. Check that WebGL is enabled and tiles.openfreemap.org is reachable.', err_title: 'Something went wrong on this page.', model_off: 'The detection model is not loaded, so analysis is unavailable. Admin: put weights at backend/weights/yolov8x-fire.pt or set YOLO_WEIGHTS_URL.',
@@ -101,6 +101,6 @@ export const extra = {
     infra_nuclear: 'Nuclear plant', infra_hydro_dam: 'Hydro dam', infra_refinery: 'Oil refinery', infra_chemical: 'Chemical plant',
     infra_airport: 'Airport', infra_power_plant: 'Power plant', infra_substation: 'Substation', infra_helipad: 'Helipad',
     verdict_title: '3. Dispatcher decision', verdict_hint: 'The model is unsure — confirm the fire or raise a critical alert.',
-    verdict_confirm: 'Confirm fire', verdict_critical: 'Critical alert',
+    verdict_confirm: 'Usual fire', verdict_critical: 'Critical alert',
   },
 }
