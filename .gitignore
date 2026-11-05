@@ -49,3 +49,8 @@ Thumbs.db
 # --- Логи ---
 *.log
 logs/repomix-2.xml
+
+# --- дисковый кэш геоданных ---
+backend/data/*.sqlite
+backend/data/*.sqlite-wal
+backend/data/*.sqlite-shm

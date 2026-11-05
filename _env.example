@@ -119,8 +119,8 @@ OVERPASS_URLS=https://overpass-api.de/api/interpreter,https://maps.mail.ru/osm/t
 OVERPASS_TIMEOUT=12
 OVERPASS_CONCURRENCY=4
 # Здоровье зеркал: упавшее зеркало уходит в охлаждение (fails * BASE, не больше MAX)
-OVERPASS_COOLDOWN_BASE=30
-OVERPASS_COOLDOWN_MAX=300
+OVERPASS_COOLDOWN_BASE=120
+OVERPASS_COOLDOWN_MAX=900
 # Сколько секунд не повторять заведомо упавший запрос
 OVERPASS_NEGATIVE_TTL=60
 # Повторы на одно зеркало: публичные инстансы часто отдают 502 «at capacity»
@@ -142,6 +142,11 @@ OPENWEATHER_KEY=
 # Файл кэша «последний удачный ответ» (30 дней). Не бэкапится, можно удалять.
 GEO_CACHE_PATH=
 INFRA_CACHE_TTL=2592000
+# Общая цепочка: сколько ждать Overpass, прежде чем отдать резерв
+INFRA_OSM_WAIT=2
+INFRA_FALLBACK_WAIT=15
+# Бюджет запроса населённых пунктов (иначе блокировка держит весь ответ)
+NEAR_BUDGET_SEC=4
 SEARCH_TTL=3600
 CLEAR_DEDUPE_KM=0.5
 

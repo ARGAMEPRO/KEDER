@@ -334,6 +334,20 @@ def _mirror_order() -> list[str]:
     return sorted(OVERPASS, key=key)
 
 
+def _cool_all_mirrors(seconds: float | None = None) -> None:
+    """Penalise every mirror after a caller gave up waiting.
+
+    Cancelling the request (budget/timeout) skips the per-mirror failure
+    bookkeeping, so without this the next caller would wait for the same
+    dead mirrors again and again.
+    """
+    sec = float(seconds or (int(os.getenv("OVERPASS_COOLDOWN_BASE") or 120)))
+    for url in OVERPASS:
+        st = _MIRROR_STATE.setdefault(url, {})
+        st["fails"] = st.get("fails", 0) + 1
+        st["until"] = max(st.get("until", 0), time.time() + sec)
+
+
 def _all_mirrors_cooling() -> bool:
     now = time.time()
     return not any((_MIRROR_STATE.get(u) or {}).get("until", 0) <= now for u in OVERPASS)
@@ -489,7 +503,8 @@ def pcache_put(key: str, value, ttl: int) -> None:
 
 def _candidate(kind: str, crit: int, name, la, lo, **extra) -> dict:
     """One facility in the shape the API and the UI already consume."""
-    row = {"kind": kind, "criticality": crit, "name": (name or "").strip() or "?", "lat": la, "lon": lo,
+    name = str(name).strip() if name is not None else ""
+    row = {"kind": kind, "criticality": crit, "name": name or "?", "lat": la, "lon": lo,
            "beds": None, "capacity": None, "emergency": False, "phone": None,
            "voltage": None, "plant_source": None, "operator": None}
     row.update(extra)
@@ -497,12 +512,15 @@ def _candidate(kind: str, crit: int, name, la, lo, **extra) -> dict:
 
 
 # --- Geoapify: OSM-derived POIs, free tier, confirmed reachable from Russia ---
-_GEOAPIFY_CATEGORIES = ",".join((
-    "healthcare.hospital", "healthcare.clinic", "healthcare.pharmacy", "healthcare.dentist",
-    "service.fire_station", "service.police", "public_service.government",
-    "education.school", "education.kindergarten",
-    "production.power_plant", "production.power_substation",
-    "airport", "airport.helipad", "production.factory",
+# Category names below were verified against the live API (invalid ones answer 400).
+# Two groups keep pharmacies/kindergartens from crowding hospitals out of the limit.
+_GEOAPIFY_CRITICAL = ",".join((
+    "healthcare.hospital", "healthcare.clinic_or_praxis",
+    "service.fire_station", "service.police",
+    "power.plant", "power.substation", "airport", "production.factory",
+))
+_GEOAPIFY_MASS = ",".join((
+    "healthcare.pharmacy", "healthcare.dentist", "education.school", "childcare.kindergarten",
 ))
 
 
@@ -511,37 +529,53 @@ def _geoapify_kind(props: dict) -> tuple[str, int]:
     ds = props.get("datasource")
     raw = ds.get("raw") if isinstance(ds, dict) else None
     if isinstance(raw, dict) and raw:
-        return infra_classify(raw)
+        # Geoapify sometimes returns numbers (beds, layer) where OSM has strings.
+        return infra_classify({k: v if isinstance(v, str) else str(v) for k, v in raw.items()})
     text = " ".join(props.get("categories") or []) + " " + str(props.get("category") or "")
     text = text.lower()
     for needle, kind in (("hospital", "hospital"), ("clinic", "clinic"), ("pharmacy", "pharmacy"),
                          ("fire_station", "fire_station"), ("police", "police"), ("school", "school"),
-                         ("kindergarten", "kindergarten"), ("power_plant", "power_plant"),
-                         ("power_substation", "substation"), ("airport", "airport"), ("helipad", "helipad"),
+                         ("kindergarten", "kindergarten"), ("power.plant", "power_plant"),
+                         ("power.substation", "substation"), ("airport", "airport"), ("helipad", "helipad"),
                          ("government", "government"), ("factory", "industrial")):
         if needle in text:
             return kind, _CRITICALITY[kind]
     return "other", _CRITICALITY["other"]
 
 
-async def geoapify_near(lat, lon, radius_m: int) -> list[dict]:
+async def _geoapify_batch(lat, lon, radius_m: int, categories: str, limit: int = 200):
     key = geoapify_key()
-    if not key:
+    base = {"filter": f"circle:{lon:.6f},{lat:.6f},{int(radius_m)}", "limit": limit, "apiKey": key, "lang": "ru"}
+    r = await http_client().get("https://api.geoapify.com/v2/places",
+                                params={**base, "categories": categories}, timeout=10)
+    if r.status_code == 400:  # category set not in the current plan -> ask for everything
+        r = await http_client().get("https://api.geoapify.com/v2/places", params=base, timeout=12)
+    r.raise_for_status()
+    return (r.json() or {}).get("features") or []
+
+
+async def geoapify_near(lat, lon, radius_m: int) -> list[dict]:
+    if not geoapify_key():
         return []
-    base = {"filter": f"circle:{lon:.6f},{lat:.6f},{int(radius_m)}", "limit": 300,
-            "apiKey": key, "lang": "ru"}
     try:
-        r = await http_client().get("https://api.geoapify.com/v2/places",
-                                    params={**base, "categories": _GEOAPIFY_CATEGORIES}, timeout=10)
-        if r.status_code == 400:  # category not in the current plan -> ask for everything
-            r = await http_client().get("https://api.geoapify.com/v2/places", params=base, timeout=12)
-        r.raise_for_status()
-        features = (r.json() or {}).get("features") or []
-    except Exception as exc:
+        batches = await asyncio.gather(
+            _geoapify_batch(lat, lon, radius_m, _GEOAPIFY_CRITICAL),
+            _geoapify_batch(lat, lon, radius_m, _GEOAPIFY_MASS),
+            return_exceptions=True,
+        )
+    except Exception as exc:  # pragma: no cover - gather already isolates failures
         log.warning("geoapify unavailable: %s", exc)
         return []
+    features, errors = [], []
+    for batch in batches:
+        if isinstance(batch, Exception):
+            errors.append(f"{type(batch).__name__}: {batch}")
+        else:
+            features.extend(batch)
+    if errors and not features:
+        log.warning("geoapify unavailable: %s", "; ".join(errors))
 
-    rows = []
+    rows, seen = [], set()
     for f in features:
         p = f.get("properties") or {}
         kind, crit = _geoapify_kind(p)
@@ -553,8 +587,13 @@ async def geoapify_near(lat, lon, radius_m: int) -> list[dict]:
             if len(geo) < 2:
                 continue
             lo, la = geo[0], geo[1]
+        oid = (kind, round(float(la), 5), round(float(lo), 5))
+        if oid in seen:
+            continue
+        seen.add(oid)
         ds = p.get("datasource")
         raw = (ds.get("raw") if isinstance(ds, dict) else None) or {}
+        raw = {k: v if isinstance(v, str) else str(v) for k, v in raw.items()}
         contact = p.get("contact") if isinstance(p.get("contact"), dict) else {}
         rows.append(_candidate(
             kind, crit, p.get("name") or raw.get("name:ru") or raw.get("name"), la, lo,
@@ -747,7 +786,7 @@ async def _wx_open_meteo(lat, lon):
         os.getenv("OPEN_METEO_URL") or "https://api.open-meteo.com/v1/forecast",
         params={"latitude": round(lat, 5), "longitude": round(lon, 5), "wind_speed_unit": "ms",
                 "current": "temperature_2m,relative_humidity_2m,wind_speed_10m,wind_direction_10m"},
-        timeout=8)
+        timeout=5)
     r.raise_for_status()
     w = r.json()["current"]
     return {"wind_speed_ms": w["wind_speed_10m"], "wind_dir_deg": w["wind_direction_10m"],
@@ -792,7 +831,9 @@ async def weather(lat, lon):
     if cached is not None:
         return cached
     errors = []
-    for name, fn in (("open-meteo", _wx_open_meteo), ("met.no", _wx_metno),
+    # met.no answers from RU while Open-Meteo is blocked, so it goes first;
+    # the rest stay as fallbacks in case of a regional outage.
+    for name, fn in (("met.no", _wx_metno), ("open-meteo", _wx_open_meteo),
                      ("openweathermap", _wx_openweathermap), ("wttr.in", _wx_wttr)):
         try:
             out = await fn(lat, lon)
@@ -1071,9 +1112,15 @@ async def nearby(lat, lon, radius_m=20000):
         f");out tags center 600;"
     )
     try:
-        data = await overpass(query, f"near:{round(lat, 3)}:{round(lon, 3)}:{radius_m}",
-                              ttl=int(os.getenv("NEAR_TTL") or 1800))
+        # A blocked Overpass must not hold the whole request: settlements have a
+        # local fallback, so this call is strictly budgeted.
+        data = await asyncio.wait_for(
+            overpass(query, f"near:{round(lat, 3)}:{round(lon, 3)}:{radius_m}",
+                     ttl=int(os.getenv("NEAR_TTL") or 1800)),
+            timeout=float(os.getenv("NEAR_BUDGET_SEC") or 4))
     except Exception as exc:
+        if isinstance(exc, asyncio.TimeoutError):
+            _cool_all_mirrors()
         log.warning("nearby query failed: %s", exc)
         data = {"elements": []}
 
@@ -1548,26 +1595,56 @@ async def infrastructure_near(lat, lon, radius_m=15000, hazard_radius_m=50000):
     t = int(OVERPASS_TIMEOUT)
     cache_key = f"infra2:{round(lat, 3)}:{round(lon, 3)}:{fetch_r}"
 
+    cached_hit = _cache_get(cache_key)
+    if cached_hit is not None:
+        return cached_hit
+
     rows: list[dict] = []
     source = "none"
 
-    try:
+    async def _osm_rows():
         data = await overpass(_INFRA_Q.format(t=t, r=fetch_r, lat=lat, lon=lon),
                               key=f"infra:{round(lat, 3)}:{round(lon, 3)}:{fetch_r}",
                               ttl=int(os.getenv("INFRA_TTL") or 1800), timeout=t + 5)
-        rows = _rows_from_overpass(data, lat, lon, radius_m, critical_radius_m, hazard_radius_m)
-        source = "osm"
-    except Exception as exc:
-        log.warning("infra: overpass unavailable (%s), trying fallbacks", exc)
+        return _rows_from_overpass(data, lat, lon, radius_m, critical_radius_m, hazard_radius_m)
 
-    if not rows:
-        rows = await geoapify_near(lat, lon, fetch_r)
-        if rows:
-            source = "geoapify"
-    if not rows:
-        rows = await twogis_near(lat, lon, fetch_r)
-        if rows:
-            source = "2gis"
+    # Overpass is the best data but often blocked from RU, so it gets a short
+    # head start instead of stalling the whole request: alternatives are already
+    # in flight and are used the moment the OSM attempt misses its slot.
+    osm_task = asyncio.create_task(_osm_rows())
+    alternatives: list[tuple[str, asyncio.Task]] = []
+    if geoapify_key():
+        alternatives.append(("geoapify", asyncio.create_task(geoapify_near(lat, lon, fetch_r))))
+    if twogis_key():
+        alternatives.append(("2gis", asyncio.create_task(twogis_near(lat, lon, fetch_r))))
+
+    try:
+        done, _pending = await asyncio.wait({osm_task}, timeout=float(os.getenv("INFRA_OSM_WAIT") or 2))
+        if done:
+            rows = osm_task.result() or []
+            source = "osm" if rows else "none"
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        log.warning("infra: overpass unavailable (%s), using fallbacks", exc)
+
+    if not rows and alternatives:
+        pending = {task for _name, task in alternatives}
+        done, _pending = await asyncio.wait(pending, timeout=float(os.getenv("INFRA_FALLBACK_WAIT") or 15))
+        for name, task in alternatives:  # priority order: geoapify -> 2gis
+            if task in done and not task.cancelled() and task.exception() is None and task.result():
+                rows, source = task.result(), name
+                break
+        for _name, task in alternatives:
+            if not task.done():
+                task.cancel()
+        if not rows:
+            log.warning("infra: fallback providers returned nothing for %.4f,%.4f", lat, lon)
+
+    if not osm_task.done():
+        osm_task.cancel()
+        _cool_all_mirrors()  # the mirrors missed their slot, stop paying for them
+
     if not rows:
         cached = pcache_get(cache_key)
         if cached:
@@ -1583,6 +1660,8 @@ async def infrastructure_near(lat, lon, radius_m=15000, hazard_radius_m=50000):
 
     if rows and source != "cache":
         pcache_put(cache_key, rows, int(os.getenv("INFRA_CACHE_TTL") or 30 * 86400))
+    if rows:
+        _cache_put(cache_key, (rows, source), int(os.getenv("INFRA_TTL") or 1800))
     if not rows:
         log.warning("infra: every provider failed for %.4f,%.4f", lat, lon)
     return rows, source

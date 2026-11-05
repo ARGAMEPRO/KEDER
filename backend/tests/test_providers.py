@@ -58,6 +58,9 @@ def _hospital_row():
 
 
 def test_infrastructure_uses_fallback_and_disk_cache(monkeypatch, tmp_path):
+    monkeypatch.setenv("GEOAPIFY_KEY", "test-key")  # enables the Geoapify branch
+    monkeypatch.delenv("TWOGIS_KEY", raising=False)
+    monkeypatch.setenv("INFRA_OSM_WAIT", "0.2")
     monkeypatch.setattr(sv, "_PCACHE_PATH", tmp_path / "geo_cache.sqlite")
     monkeypatch.setattr(sv, "_pcache_ready", False)
     monkeypatch.setattr(sv, "_pcache_broken", False)
@@ -84,12 +87,14 @@ def test_infrastructure_uses_fallback_and_disk_cache(monkeypatch, tmp_path):
     assert got[0]["distance_km"] > 0
 
     monkeypatch.setattr(sv, "geoapify_near", no_rows)
+    sv._CACHE.clear()  # drop the in-process copy, leave only the disk cache
     cached, source = asyncio.run(_real_infrastructure(55.7558, 37.6173, 12000, 12000))
     assert source == "cache"
     assert len(cached) == len(got)
 
 
 def test_infrastructure_prefers_overpass_when_it_answers(monkeypatch, tmp_path):
+    monkeypatch.setenv("INFRA_OSM_WAIT", "2")
     monkeypatch.setattr(sv, "_PCACHE_PATH", tmp_path / "geo_cache.sqlite")
     monkeypatch.setattr(sv, "_pcache_ready", False)
     monkeypatch.setattr(sv, "_pcache_broken", False)
