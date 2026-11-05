@@ -11,6 +11,7 @@ Design rules kept throughout this module:
 from __future__ import annotations
 
 import asyncio
+import base64
 import hashlib
 import heapq
 import io
@@ -18,6 +19,7 @@ import json
 import logging
 import math
 import os
+import struct
 import threading
 import time
 from pathlib import Path
@@ -362,63 +364,456 @@ async def overpass(query, key, ttl=900, timeout=None):
 
         t = timeout or OVERPASS_TIMEOUT
         last = "Overpass недоступен"
+        # "502 at capacity" and timeouts are transient on public instances: one
+        # short retry per mirror recovers a lot of them without a long stall.
+        attempts = max(1, int(os.getenv("OVERPASS_ATTEMPTS") or 2))
         for url in _mirror_order():
             st = _MIRROR_STATE.setdefault(url, {})
             if st.get("until", 0) > time.time():
                 continue
             started = time.monotonic()
-            try:
-                r = await http_client().post(url, data={"data": query}, timeout=t)
-                r.raise_for_status()
-                data = r.json()
-                st["fails"] = 0
-                st["latency"] = time.monotonic() - started
-                st["until"] = 0
-                _cache_put(key, data, ttl)
-                return data
-            except Exception as exc:
-                st["fails"] = st.get("fails", 0) + 1
-                cooldown = min(int(os.getenv("OVERPASS_COOLDOWN_MAX") or 300),
-                               (int(os.getenv("OVERPASS_COOLDOWN_BASE") or 30)) * st["fails"])
-                st["until"] = time.time() + cooldown
-                last = f"{type(exc).__name__}: {exc}"
-                log.warning("overpass mirror %s failed (%s); cooldown %ss", url, last, cooldown)
+            for attempt in range(attempts):
+                try:
+                    r = await http_client().post(url, data={"data": query}, timeout=t)
+                    r.raise_for_status()
+                    data = r.json()
+                    st["fails"] = 0
+                    st["latency"] = time.monotonic() - started
+                    st["until"] = 0
+                    _cache_put(key, data, ttl)
+                    return data
+                except Exception as exc:
+                    last = f"{type(exc).__name__}: {exc}"
+                    if attempt + 1 < attempts:
+                        log.info("overpass mirror %s attempt %s failed (%s), retrying", url, attempt + 1, last)
+                        await asyncio.sleep(1.5 + attempt)
+            st["fails"] = st.get("fails", 0) + 1
+            cooldown = min(int(os.getenv("OVERPASS_COOLDOWN_MAX") or 300),
+                           (int(os.getenv("OVERPASS_COOLDOWN_BASE") or 30)) * st["fails"])
+            st["until"] = time.time() + cooldown
+            log.warning("overpass mirror %s failed (%s); cooldown %ss", url, last, cooldown)
 
         _cache_put(f"neg:{key}", last, int(os.getenv("OVERPASS_NEGATIVE_TTL") or 60))
         raise RuntimeError(last)
 
 
+# --------------------------------------------------------------------------
+# Providers that stay reachable from Russia + a cache that outlives an outage
+# --------------------------------------------------------------------------
+# Public OSM endpoints are blocked or saturated from Russian networks, so every
+# external lookup below has a mandatory fallback chain. The order is always
+# "cheapest and most local first": a keyless provider that works, then a keyed
+# one, then the last successful response stored on disk. Nothing here invents
+# data: when every provider fails the caller gets an empty result, not a fake.
+
+
+def _settings(name: str) -> str:
+    return (os.getenv(name) or "").strip()
+
+
+def geoapify_key() -> str:
+    return _settings("GEOAPIFY_KEY")
+
+
+def twogis_key() -> str:
+    return _settings("TWOGIS_KEY")
+
+
+_PCACHE_PATH = Path(_settings("GEO_CACHE_PATH") or
+                    (Path(__file__).resolve().parent.parent / "data" / "geo_cache.sqlite"))
+_pcache_lock = threading.Lock()
+_pcache_ready = False
+_pcache_broken = False
+_pcache_writes = 0
+
+
+def _pcache_connect():
+    """Open (and lazily create) the on-disk cache: deliberately separate from the main DB."""
+    global _pcache_ready
+    import sqlite3
+    if not _pcache_ready:
+        with _pcache_lock:
+            if not _pcache_ready:
+                _PCACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
+                con = sqlite3.connect(_PCACHE_PATH, timeout=5)
+                try:
+                    con.execute("PRAGMA journal_mode=WAL")
+                    con.execute("CREATE TABLE IF NOT EXISTS cache "
+                                "(k TEXT PRIMARY KEY, v TEXT NOT NULL, exp REAL NOT NULL)")
+                    con.commit()
+                finally:
+                    con.close()
+                _pcache_ready = True
+    return sqlite3.connect(_PCACHE_PATH, timeout=5)
+
+
+def pcache_get(key: str):
+    """Cached value while its TTL is valid, else None."""
+    global _pcache_broken
+    if _pcache_broken:
+        return None
+    try:
+        con = _pcache_connect()
+        try:
+            row = con.execute("SELECT v, exp FROM cache WHERE k = ?", (key,)).fetchone()
+        finally:
+            con.close()
+        if not row or row[1] < time.time():
+            return None
+        return json.loads(row[0])
+    except Exception as exc:
+        _pcache_broken = True
+        log.warning("disk cache unavailable: %s", exc)
+        return None
+
+
+def pcache_put(key: str, value, ttl: int) -> None:
+    global _pcache_broken, _pcache_writes
+    if _pcache_broken:
+        return
+    try:
+        con = _pcache_connect()
+        try:
+            con.execute("INSERT OR REPLACE INTO cache (k, v, exp) VALUES (?, ?, ?)",
+                        (key, json.dumps(value, ensure_ascii=False), time.time() + ttl))
+            _pcache_writes += 1
+            if _pcache_writes % 200 == 0:
+                con.execute("DELETE FROM cache WHERE exp < ?", (time.time(),))
+            con.commit()
+        finally:
+            con.close()
+    except Exception as exc:
+        _pcache_broken = True
+        log.warning("disk cache write failed: %s", exc)
+
+
+def _candidate(kind: str, crit: int, name, la, lo, **extra) -> dict:
+    """One facility in the shape the API and the UI already consume."""
+    row = {"kind": kind, "criticality": crit, "name": (name or "").strip() or "?", "lat": la, "lon": lo,
+           "beds": None, "capacity": None, "emergency": False, "phone": None,
+           "voltage": None, "plant_source": None, "operator": None}
+    row.update(extra)
+    return row
+
+
+# --- Geoapify: OSM-derived POIs, free tier, confirmed reachable from Russia ---
+_GEOAPIFY_CATEGORIES = ",".join((
+    "healthcare.hospital", "healthcare.clinic", "healthcare.pharmacy", "healthcare.dentist",
+    "service.fire_station", "service.police", "public_service.government",
+    "education.school", "education.kindergarten",
+    "production.power_plant", "production.power_substation",
+    "airport", "airport.helipad", "production.factory",
+))
+
+
+def _geoapify_kind(props: dict) -> tuple[str, int]:
+    """Prefer the original OSM tags Geoapify ships, fall back to its category names."""
+    ds = props.get("datasource")
+    raw = ds.get("raw") if isinstance(ds, dict) else None
+    if isinstance(raw, dict) and raw:
+        return infra_classify(raw)
+    text = " ".join(props.get("categories") or []) + " " + str(props.get("category") or "")
+    text = text.lower()
+    for needle, kind in (("hospital", "hospital"), ("clinic", "clinic"), ("pharmacy", "pharmacy"),
+                         ("fire_station", "fire_station"), ("police", "police"), ("school", "school"),
+                         ("kindergarten", "kindergarten"), ("power_plant", "power_plant"),
+                         ("power_substation", "substation"), ("airport", "airport"), ("helipad", "helipad"),
+                         ("government", "government"), ("factory", "industrial")):
+        if needle in text:
+            return kind, _CRITICALITY[kind]
+    return "other", _CRITICALITY["other"]
+
+
+async def geoapify_near(lat, lon, radius_m: int) -> list[dict]:
+    key = geoapify_key()
+    if not key:
+        return []
+    base = {"filter": f"circle:{lon:.6f},{lat:.6f},{int(radius_m)}", "limit": 300,
+            "apiKey": key, "lang": "ru"}
+    try:
+        r = await http_client().get("https://api.geoapify.com/v2/places",
+                                    params={**base, "categories": _GEOAPIFY_CATEGORIES}, timeout=10)
+        if r.status_code == 400:  # category not in the current plan -> ask for everything
+            r = await http_client().get("https://api.geoapify.com/v2/places", params=base, timeout=12)
+        r.raise_for_status()
+        features = (r.json() or {}).get("features") or []
+    except Exception as exc:
+        log.warning("geoapify unavailable: %s", exc)
+        return []
+
+    rows = []
+    for f in features:
+        p = f.get("properties") or {}
+        kind, crit = _geoapify_kind(p)
+        if kind == "other":
+            continue
+        la, lo = p.get("lat"), p.get("lon")
+        if la is None or lo is None:
+            geo = (f.get("geometry") or {}).get("coordinates") or []
+            if len(geo) < 2:
+                continue
+            lo, la = geo[0], geo[1]
+        ds = p.get("datasource")
+        raw = (ds.get("raw") if isinstance(ds, dict) else None) or {}
+        contact = p.get("contact") if isinstance(p.get("contact"), dict) else {}
+        rows.append(_candidate(
+            kind, crit, p.get("name") or raw.get("name:ru") or raw.get("name"), la, lo,
+            phone=contact.get("phone") or raw.get("phone"),
+            beds=_to_int(raw.get("beds")), capacity=_to_int(raw.get("capacity")),
+            emergency=str(raw.get("emergency")) in ("yes", "designated"),
+            operator=raw.get("operator"), voltage=raw.get("voltage"),
+            plant_source=raw.get("plant:source"),
+        ))
+    return rows
+
+
+# --- 2GIS: Russian data, free demo key ---
+_TWOGIS_KINDS = (
+    ("hospital", "больница"), ("clinic", "поликлиника"), ("fire_station", "пожарная часть"),
+    ("police", "полиция"), ("pharmacy", "аптека"), ("ambulance", "скорая помощь"),
+    ("power_plant", "электростанция"), ("airport", "аэропорт"),
+)
+
+
+async def twogis_near(lat, lon, radius_m: int) -> list[dict]:
+    key = twogis_key()
+    if not key:
+        return []
+
+    async def one(kind: str, query: str) -> list[dict]:
+        try:
+            r = await http_client().get(
+                "https://catalog.api.2gis.com/3.0/items",
+                params={"q": query, "point": f"{lon:.6f},{lat:.6f}", "radius": int(radius_m), "key": key,
+                        "fields": "items.point,items.name,items.address,items.rubrics", "page_size": 50},
+                timeout=10)
+            r.raise_for_status()
+            items = ((r.json() or {}).get("result") or {}).get("items") or []
+        except Exception as exc:
+            log.debug("2gis %s failed: %s", kind, exc)
+            return []
+        out = []
+        for it in items:
+            pt = it.get("point") or {}
+            if pt.get("lat") is None or pt.get("lon") is None:
+                continue
+            out.append(_candidate(kind, _CRITICALITY[kind], it.get("name"), pt["lat"], pt["lon"]))
+        return out
+
+    batches = await asyncio.gather(*(one(k, q) for k, q in _TWOGIS_KINDS))
+    return [row for batch in batches for row in batch]
+
+
+# --- Yandex suggest: keyless geocoding that works from Russia ---
+def _pb_varint(buf: bytes, i: int) -> tuple[int, int]:
+    shift = value = 0
+    while i < len(buf):
+        b = buf[i]
+        i += 1
+        value |= (b & 0x7F) << shift
+        if not b & 0x80:
+            break
+        shift += 7
+    return value, i
+
+
+def _pb_fields(buf: bytes) -> list[tuple[int, int, object]]:
+    i, out = 0, []
+    while i < len(buf):
+        key, i = _pb_varint(buf, i)
+        field, wire = key >> 3, key & 7
+        try:
+            if wire == 0:
+                value, i = _pb_varint(buf, i)
+            elif wire == 1:
+                value = struct.unpack_from("<d", buf, i)[0]
+                i += 8
+            elif wire == 2:
+                length, i = _pb_varint(buf, i)
+                value = buf[i:i + length]
+                i += length
+            elif wire == 5:
+                value = struct.unpack_from("<f", buf, i)[0]
+                i += 4
+            else:
+                break
+        except (IndexError, struct.error):
+            break
+        out.append((field, wire, value))
+    return out
+
+
+def ymaps_point(uri: str):
+    """(lat, lon) decoded from `ymapsbm1://geo?data=<protobuf>` returned by Yandex suggest.
+
+    The payload is a protobuf where field 4 holds the point: field 1 = longitude,
+    field 2 = latitude, both float32. Other fields carry strings that a naive scan
+    would misread as numbers, so only a nested message with exactly two floats counts.
+    """
+    if not uri or "data=" not in uri:
+        return None
+    raw = uri.split("data=", 1)[1].split("&")[0]
+    try:
+        blob = base64.urlsafe_b64decode(raw + "=" * (-len(raw) % 4))
+    except Exception:
+        return None
+
+    pairs = []
+    for field, wire, value in _pb_fields(blob):
+        if wire != 2 or not isinstance(value, (bytes, bytearray)):
+            continue
+        inner = _pb_fields(bytes(value))
+        floats = [v for _f, w, v in inner if w == 5 and isinstance(v, float)]
+        if len(floats) == 2:
+            pairs.append((field, floats))
+    if not pairs:
+        return None
+    pairs.sort(key=lambda p: p[0] != 4)  # field 4 is the point; anything else is a guess
+    lon, lat = pairs[0][1]
+    if abs(lat) > 90:  # defensive: older payloads order the pair the other way round
+        lon, lat = lat, lon
+    return (lat, lon) if (-90 <= lat <= 90 and -180 <= lon <= 180) else None
+
+
+#: Yandex suggest tags that describe a populated place rather than a street/building.
+_SETTLEMENT_TAGS = {"locality", "area", "district", "region", "province", "settlement",
+                    "village", "town", "city", "suburb"}
+
+
+async def yandex_suggest(q: str, limit: int = 8) -> list[dict]:
+    try:
+        r = await http_client().get(
+            "https://suggest-maps.yandex.ru/suggest-geo",
+            params={"v": 9, "search_type": "tp", "part": q, "lang": "ru_RU",
+                    "fullpath": 1, "print_address": 1, "bases": "geo"},
+            timeout=6)
+        r.raise_for_status()
+        body = r.text
+        payload = json.loads(body[body.find("(") + 1:body.rfind(")")])
+    except Exception as exc:
+        log.debug("yandex suggest failed: %s", exc)
+        return []
+
+    out = []
+    for item in payload.get("results") or []:
+        if item.get("type") != "toponym":
+            continue
+        where = item.get("where") or {}
+        title = (item.get("title") or {}).get("text") or ""
+        # Exact toponym hits carry only `title`; fuzzy ones carry `where.name`.
+        name = (where.get("name") or title or item.get("text") or "").strip().rstrip(",")
+        point = ymaps_point(item.get("uri") or "")
+        if not point or not name:
+            continue
+        if where.get("name") and not where["name"].startswith("Россия"):
+            continue
+        tags = where.get("tags") or item.get("tags") or []
+        # The same endpoint happily returns streets and railway stations: the
+        # search box is for settlements only.
+        if not set(tags) & _SETTLEMENT_TAGS:
+            continue
+        out.append({"name": name, "lat": point[0], "lon": point[1],
+                    "type": "city" if "locality" in tags else (tags[0] if tags else "city"),
+                    "population": None,
+                    "source": "yandex", "importance": 0.9})
+        if len(out) >= limit:
+            break
+    return out
+
+
+def local_reverse(lat: float, lon: float, max_km: float = 120.0) -> str:
+    """Nearest settlement from the bundled dataset — works with no network at all."""
+    try:
+        cities = local_cities()
+    except Exception:
+        return ""
+    best, best_d = None, max_km
+    for c in cities:
+        try:
+            d = haversine_km(lat, lon, c["lat"], c["lon"])
+        except Exception:
+            continue
+        if d < best_d:
+            best, best_d = c, d
+    if not best:
+        return ""
+    region = best.get("r") or ""
+    return f'{best["n"]}, {region}' if region else best["n"]
+
+
+# --- weather providers (Open-Meteo is blocked in RU, the rest are not) ---
+async def _wx_open_meteo(lat, lon):
+    r = await http_client().get(
+        os.getenv("OPEN_METEO_URL") or "https://api.open-meteo.com/v1/forecast",
+        params={"latitude": round(lat, 5), "longitude": round(lon, 5), "wind_speed_unit": "ms",
+                "current": "temperature_2m,relative_humidity_2m,wind_speed_10m,wind_direction_10m"},
+        timeout=8)
+    r.raise_for_status()
+    w = r.json()["current"]
+    return {"wind_speed_ms": w["wind_speed_10m"], "wind_dir_deg": w["wind_direction_10m"],
+            "temp_c": w["temperature_2m"], "humidity_pct": w["relative_humidity_2m"]}
+
+
+async def _wx_metno(lat, lon):
+    r = await http_client().get("https://api.met.no/weatherapi/locationforecast/2.0/compact",
+                                params={"lat": round(lat, 4), "lon": round(lon, 4)}, timeout=8)
+    r.raise_for_status()
+    d = r.json()["properties"]["timeseries"][0]["data"]["instant"]["details"]
+    return {"wind_speed_ms": d["wind_speed"], "wind_dir_deg": d["wind_from_direction"],
+            "temp_c": d["air_temperature"], "humidity_pct": d["relative_humidity"]}
+
+
+async def _wx_openweathermap(lat, lon):
+    key = _settings("OPENWEATHER_KEY")
+    if not key:
+        return None
+    r = await http_client().get("https://api.openweathermap.org/data/2.5/weather",
+                                params={"lat": round(lat, 5), "lon": round(lon, 5), "units": "metric",
+                                        "appid": key, "lang": "ru"}, timeout=8)
+    r.raise_for_status()
+    j = r.json()
+    return {"wind_speed_ms": j["wind"]["speed"], "wind_dir_deg": j["wind"].get("deg"),
+            "temp_c": j["main"]["temp"], "humidity_pct": j["main"]["humidity"]}
+
+
+async def _wx_wttr(lat, lon):
+    r = await http_client().get(f"https://wttr.in/{lat:.4f},{lon:.4f}", params={"format": "j1"}, timeout=10)
+    r.raise_for_status()
+    c = r.json()["current_condition"][0]
+    return {"wind_speed_ms": round(float(c["windspeedKmph"]) / 3.6, 1),
+            "wind_dir_deg": int(c["winddirDegree"]),
+            "temp_c": float(c["tempC"]), "humidity_pct": int(c["humidity"])}
+
+
 async def weather(lat, lon):
-    """Real Open-Meteo data, or (None, reason). No invented defaults."""
+    """Weather through a chain of providers; never invents values."""
     key = f"wx:{round(lat, 4)}:{round(lon, 4)}"
     cached = _cache_get(key)
     if cached is not None:
         return cached
-    err = ""
-    for attempt in range(2):
+    errors = []
+    for name, fn in (("open-meteo", _wx_open_meteo), ("met.no", _wx_metno),
+                     ("openweathermap", _wx_openweathermap), ("wttr.in", _wx_wttr)):
         try:
-            r = await http_client().get(
-                os.getenv("OPEN_METEO_URL") or "https://api.open-meteo.com/v1/forecast",
-                params={"latitude": round(lat, 5), "longitude": round(lon, 5), "wind_speed_unit": "ms",
-                        "current": "temperature_2m,relative_humidity_2m,wind_speed_10m,wind_direction_10m"},
-                timeout=10,
-            )
-            r.raise_for_status()
-            w = r.json()["current"]
-            out = ({"wind_speed_ms": w["wind_speed_10m"], "wind_dir_deg": w["wind_direction_10m"],
-                    "temp_c": w["temperature_2m"], "humidity_pct": w["relative_humidity_2m"]}, "")
-            _cache_put(key, out, int(os.getenv("WEATHER_TTL") or 600))
-            return out
+            out = await fn(lat, lon)
         except Exception as exc:
-            err = f"{type(exc).__name__}: {exc}"
-            if attempt == 0:
-                await asyncio.sleep(0.5)
-    log.warning("weather unavailable: %s", err)
-    return None, err
+            errors.append(f"{name}: {type(exc).__name__}: {exc}")
+            continue
+        if out and out.get("wind_speed_ms") is not None:
+            value = (out, "")
+            _cache_put(key, value, int(os.getenv("WEATHER_TTL") or 600))
+            pcache_put(f"disk:{key}", out, 86400)
+            return value
+    stale = pcache_get(f"disk:{key}")
+    if stale:
+        log.warning("weather providers down, serving cached values: %s", "; ".join(errors))
+        return stale, "cached"
+    log.warning("weather unavailable: %s", "; ".join(errors))
+    return None, "; ".join(errors)
 
 
 async def reverse_geocode(lat, lon):
-    """(display_name, country_code) from Nominatim; ('', '') when unreachable."""
+    """Region name from Nominatim, else the nearest bundled settlement, else ''."""
     key = f"geo:{round(lat, 4)}:{round(lon, 4)}"
     cached = _cache_get(key)
     if cached is not None:
@@ -429,16 +824,21 @@ async def reverse_geocode(lat, lon):
         r = await http_client().get(
             reverse_url,
             params={"lat": lat, "lon": lon, "format": "jsonv2", "zoom": 12, "accept-language": "ru"},
-            timeout=8,
+            timeout=5,
         )
         r.raise_for_status()
         j = r.json()
         out = (j.get("display_name", "") or "", (j.get("address", {}).get("country_code") or ""))
         _cache_put(key, out, int(os.getenv("GEOCODE_TTL") or 86400))
+        pcache_put(f"disk:{key}", out, 30 * 86400)
         return out
     except Exception as exc:
-        log.warning("geocode unavailable: %s", exc)
-        return "", ""
+        log.debug("nominatim reverse unavailable: %s", exc)
+    out = (local_reverse(lat, lon), "ru")
+    if out[0]:
+        _cache_put(key, out, int(os.getenv("GEOCODE_TTL") or 86400))
+        return out
+    return "", ""
 
 
 def _norm(s: str) -> str:
@@ -1098,30 +1498,7 @@ def _allowed_radius(kind: str, radius_m: int, critical_radius_m: int, hazard_rad
     return radius_m
 
 
-async def infrastructure_near(lat, lon, radius_m=15000, hazard_radius_m=50000):
-    """Critical infrastructure near a point, from a single Overpass query.
-
-    Critical objects (nuclear/hydro/refinery/chemical) are searched in
-    CRITICAL_RADIUS_M, ordinary energy/transport objects in HAZARD_RADIUS_M and
-    medical/emergency services in `radius_m`. One query is issued at the largest
-    radius and the per-category radii are applied locally, which is equivalent to
-    four separate queries but costs one round-trip.
-    """
-    radius_m = max(2000, min(int(radius_m), 30000))
-    hazard_radius_m = max(radius_m, min(int(hazard_radius_m), 80000))
-    critical_radius_m = max(radius_m, min(int(os.getenv("CRITICAL_RADIUS_M") or 30000), 80000))
-    fetch_r = max(radius_m, hazard_radius_m, critical_radius_m)
-    t = int(OVERPASS_TIMEOUT)
-
-    try:
-        data = await overpass(_INFRA_Q.format(t=t, r=fetch_r, lat=lat, lon=lon),
-                              key=f"infra:{round(lat, 3)}:{round(lon, 3)}:{fetch_r}",
-                              ttl=int(os.getenv("INFRA_TTL") or 1800), timeout=t + 5)
-        source = "osm"
-    except Exception as exc:
-        log.warning("infra query failed: %s", exc)
-        return [], "none"
-
+def _rows_from_overpass(data: dict, lat, lon, radius_m, critical_radius_m, hazard_radius_m) -> list[dict]:
     seen_ids, rows = set(), []
     for el in data.get("elements", []):
         oid = (el.get("type"), el.get("id"))
@@ -1149,9 +1526,66 @@ async def infrastructure_near(lat, lon, radius_m=15000, hazard_radius_m=50000):
             "voltage": tg.get("voltage"), "plant_source": tg.get("plant:source"),
             "operator": tg.get("operator"),
         })
+    return rows
 
+
+async def infrastructure_near(lat, lon, radius_m=15000, hazard_radius_m=50000):
+    """Critical infrastructure near a point, through an ordered provider chain.
+
+    Order: Overpass (OSM, richest but often blocked/saturated in RU) -> Geoapify
+    (OSM-derived, free key) -> 2GIS (Russian data, free key) -> last successful
+    answer from the on-disk cache. The first provider that returns anything wins,
+    so one blocklisted host never empties the panel.
+
+    Critical objects (nuclear/hydro/refinery/chemical) are searched in
+    CRITICAL_RADIUS_M, ordinary energy/transport objects in HAZARD_RADIUS_M and
+    medical/emergency services in `radius_m`.
+    """
+    radius_m = max(2000, min(int(radius_m), 30000))
+    hazard_radius_m = max(radius_m, min(int(hazard_radius_m), 80000))
+    critical_radius_m = max(radius_m, min(int(os.getenv("CRITICAL_RADIUS_M") or 30000), 80000))
+    fetch_r = max(radius_m, hazard_radius_m, critical_radius_m)
+    t = int(OVERPASS_TIMEOUT)
+    cache_key = f"infra2:{round(lat, 3)}:{round(lon, 3)}:{fetch_r}"
+
+    rows: list[dict] = []
+    source = "none"
+
+    try:
+        data = await overpass(_INFRA_Q.format(t=t, r=fetch_r, lat=lat, lon=lon),
+                              key=f"infra:{round(lat, 3)}:{round(lon, 3)}:{fetch_r}",
+                              ttl=int(os.getenv("INFRA_TTL") or 1800), timeout=t + 5)
+        rows = _rows_from_overpass(data, lat, lon, radius_m, critical_radius_m, hazard_radius_m)
+        source = "osm"
+    except Exception as exc:
+        log.warning("infra: overpass unavailable (%s), trying fallbacks", exc)
+
+    if not rows:
+        rows = await geoapify_near(lat, lon, fetch_r)
+        if rows:
+            source = "geoapify"
+    if not rows:
+        rows = await twogis_near(lat, lon, fetch_r)
+        if rows:
+            source = "2gis"
+    if not rows:
+        cached = pcache_get(cache_key)
+        if cached:
+            rows, source = cached, "cache"
+
+    for row in rows:
+        if "distance_km" not in row:
+            row["distance_km"] = round(haversine_km(lat, lon, row["lat"], row["lon"]), 2)
+    rows = [r for r in rows
+            if r["distance_km"] * 1000 <= _allowed_radius(r["kind"], radius_m, critical_radius_m, hazard_radius_m)]
     rows.sort(key=lambda r: (-r["criticality"], r["distance_km"]))
-    return rows[:120], source
+    rows = rows[:120]
+
+    if rows and source != "cache":
+        pcache_put(cache_key, rows, int(os.getenv("INFRA_CACHE_TTL") or 30 * 86400))
+    if not rows:
+        log.warning("infra: every provider failed for %.4f,%.4f", lat, lon)
+    return rows, source
 
 
 # --------------------------------------------------------------------------

@@ -89,24 +89,31 @@ const createMask = () => {
 const MASK = createMask()
 const COLOR = { CRITICAL_ALERT: '#D52518', CONFIRMED: '#F96015', PENDING_VERIFICATION: '#FFC926' }
 const EMPTY = { type: 'FeatureCollection', features: [] }
-const STYLE = {
-  light: 'https://tiles.openfreemap.org/styles/positron',
-  dark: 'https://tiles.openfreemap.org/styles/dark',
+// Базовые тайлы: Яндекс (доступен из РФ, без ключа), затем 2ГИС как резерв —
+// openfreemap/Esri/OSM из российских сетей заблокированы.
+const TILES = {
+  map: [
+    'https://core-renderer-tiles.maps.yandex.net/tiles?l=map&x={x}&y={y}&z={z}&scale=1&lang=ru_RU',
+    'https://tile2.maps.2gis.com/tiles?x={x}&y={y}&z={z}&v=1',
+  ],
+  sat: [
+    'https://core-sat.maps.yandex.net/tiles?l=sat&v=3.700.0&x={x}&y={y}&z={z}&scale=1&lang=ru_RU',
+  ],
 }
-// Спутниковый базовый слой: Esri World Imagery (растровые тайлы, без API-ключа)
-const SAT = {
+const rasterStyle = (tiles, id, attribution) => ({
   version: 8,
-  sources: {
-    sat: {
-      type: 'raster',
-      tiles: ['https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}'],
-      tileSize: 256,
-      maxzoom: 19,
-      attribution: 'Imagery © Esri, Maxar, Earthstar Geographics',
-    },
-  },
-  layers: [{ id: 'sat', type: 'raster', source: 'sat' }],
+  sources: { [id]: { type: 'raster', tiles, tileSize: 256, maxzoom: 19, attribution } },
+  layers: [
+    { id: 'bg', type: 'background', paint: { 'background-color': '#EFEDE8' } },
+    { id, type: 'raster', source: id },
+  ],
+})
+const STYLE = {
+  light: rasterStyle(TILES.map, 'base', '© Яндекс'),
+  dark: rasterStyle(TILES.map, 'base', '© Яндекс'),
 }
+// Спутниковый базовый слой: те же Яндекс-тайлы, ключ не нужен
+const SAT = rasterStyle(TILES.sat, 'sat', '© Яндекс')
 // Палитра объектов критической инфраструктуры (для точек МЧС на карте)
 const INFRA_COLOR = {
   nuclear: '#8B0000', hydro_dam: '#8B0000', refinery: '#8B0000',

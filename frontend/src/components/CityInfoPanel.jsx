@@ -118,6 +118,9 @@ export default function CityInfoPanel({ t, place, data, onClose, onFocus, error,
             )}
             <p className="mt-3 text-xs text-muted-foreground">
               {data.source === 'osm' ? t.src_osm_infra :
+               data.source === 'geoapify' ? t.src_geoapify :
+               data.source === '2gis' ? t.src_2gis :
+               data.source === 'cache' ? t.src_cache :
                data.source === 'partial' ? t.infra_partial :
                t.city_infra_empty}
             </p>

@@ -1386,7 +1386,12 @@ async def geo_search(q: str, lang: str = "ru"):
     remote: list[dict] = []
     if len(local) < 5:
         try:
-            remote = await sv.nominatim_search(q, limit=8, lang=lang)
+            remote = await sv.yandex_suggest(q, limit=8)
+        except Exception as exc:
+            log.debug("yandex suggest failed: %s", exc)
+    if len(local) + len(remote) < 5:
+        try:
+            remote += await sv.nominatim_search(q, limit=8, lang=lang)
         except Exception as exc:
             log.warning("nominatim search failed: %s", exc)
     seen, merged = set(), []

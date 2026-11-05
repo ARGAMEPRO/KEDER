@@ -363,6 +363,7 @@ def test_failed_mirror_gets_cooled_down(monkeypatch):
     monkeypatch.setattr(svc, "OVERPASS", ["http://a", "http://b"])
     monkeypatch.setattr(svc, "_MIRROR_STATE", {})
     monkeypatch.setattr(svc, "http_client", lambda: FakeClient())
+    monkeypatch.setenv("OVERPASS_ATTEMPTS", "1")  # retries are covered separately
     svc._CACHE.clear()
 
     import asyncio as _a
