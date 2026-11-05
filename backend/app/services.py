@@ -514,14 +514,16 @@ def _candidate(kind: str, crit: int, name, la, lo, **extra) -> dict:
 # --- Geoapify: OSM-derived POIs, free tier, confirmed reachable from Russia ---
 # Category names below were verified against the live API (invalid ones answer 400).
 # Two groups keep pharmacies/kindergartens from crowding hospitals out of the limit.
-_GEOAPIFY_CRITICAL = ",".join((
-    "healthcare.hospital", "healthcare.clinic_or_praxis",
-    "service.fire_station", "service.police",
-    "power.plant", "power.substation", "airport", "production.factory",
-))
-_GEOAPIFY_MASS = ",".join((
-    "healthcare.pharmacy", "healthcare.dentist", "education.school", "childcare.kindergarten",
-))
+# Separate requests per group: in a big city hospitals alone can fill the whole
+# limit, and then power plants / refineries would never come back.
+_GEOAPIFY_GROUPS = (
+    ",".join(("healthcare.hospital", "healthcare.clinic_or_praxis",
+              "service.fire_station", "service.police")),
+    ",".join(("power.plant", "power.substation", "production")),
+    "airport",  # must be queried alone: combined with other categories it returns nothing
+    ",".join(("healthcare.pharmacy", "healthcare.dentist",
+              "education.school", "childcare.kindergarten")),
+)
 
 
 def _geoapify_kind(props: dict) -> tuple[str, int]:
@@ -529,8 +531,12 @@ def _geoapify_kind(props: dict) -> tuple[str, int]:
     ds = props.get("datasource")
     raw = ds.get("raw") if isinstance(ds, dict) else None
     if isinstance(raw, dict) and raw:
-        # Geoapify sometimes returns numbers (beds, layer) where OSM has strings.
-        return infra_classify({k: v if isinstance(v, str) else str(v) for k, v in raw.items()})
+        # Geoapify sometimes returns numbers (beds, layer) where OSM has strings,
+        # and may keep `name` only on properties — classification needs both.
+        tags = {k: v if isinstance(v, str) else str(v) for k, v in raw.items()}
+        if not tags.get("name") and props.get("name"):
+            tags["name"] = str(props["name"])
+        return infra_classify(tags)
     text = " ".join(props.get("categories") or []) + " " + str(props.get("category") or "")
     text = text.lower()
     for needle, kind in (("hospital", "hospital"), ("clinic", "clinic"), ("pharmacy", "pharmacy"),
@@ -559,8 +565,7 @@ async def geoapify_near(lat, lon, radius_m: int) -> list[dict]:
         return []
     try:
         batches = await asyncio.gather(
-            _geoapify_batch(lat, lon, radius_m, _GEOAPIFY_CRITICAL),
-            _geoapify_batch(lat, lon, radius_m, _GEOAPIFY_MASS),
+            *(_geoapify_batch(lat, lon, radius_m, group) for group in _GEOAPIFY_GROUPS),
             return_exceptions=True,
         )
     except Exception as exc:  # pragma: no cover - gather already isolates failures
@@ -579,7 +584,9 @@ async def geoapify_near(lat, lon, radius_m: int) -> list[dict]:
     for f in features:
         p = f.get("properties") or {}
         kind, crit = _geoapify_kind(p)
-        if kind == "other":
+        # `production` returns thousands of ordinary factories: noise for an
+        # emergency panel. Refineries and chemical plants are classified above.
+        if kind in ("other", "industrial"):
             continue
         la, lo = p.get("lat"), p.get("lon")
         if la is None or lo is None:
@@ -1461,11 +1468,13 @@ def infra_classify(tags: dict) -> tuple[str, int]:
 
     if pw == "plant" and ("nuclear" in src or "АЭС" in name):
         return "nuclear", _CRITICALITY["nuclear"]
+    if pw == "plant" and "ГРЭС" in name:  # before the ГЭС check: ГРЭС contains ГЭС
+        return "power_plant", _CRITICALITY["power_plant"]
     if pw == "plant" and ("hydro" in src or "ГЭС" in name):
         return "hydro_dam", _CRITICALITY["hydro_dam"]
-    if ind == "refinery" or prod in ("oil", "gas") or "НПЗ" in name:
+    if ind == "refinery" or prod in ("oil", "gas") or "НПЗ" in name or "НЕФТЕПЕРЕРАБ" in name:
         return "refinery", _CRITICALITY["refinery"]
-    if haz == "chemical" or ind == "chemical":
+    if haz == "chemical" or ind == "chemical" or "ХИМЗАВОД" in name or "ХИМКОМБИНАТ" in name:
         return "chemical", _CRITICALITY["chemical"]
     if pw == "plant":
         return "power_plant", _CRITICALITY["power_plant"]
@@ -1593,7 +1602,8 @@ async def infrastructure_near(lat, lon, radius_m=15000, hazard_radius_m=50000):
     critical_radius_m = max(radius_m, min(int(os.getenv("CRITICAL_RADIUS_M") or 30000), 80000))
     fetch_r = max(radius_m, hazard_radius_m, critical_radius_m)
     t = int(OVERPASS_TIMEOUT)
-    cache_key = f"infra2:{round(lat, 3)}:{round(lon, 3)}:{fetch_r}"
+    # Bump the prefix whenever classification changes, so old answers are not reused.
+    cache_key = f"infra3:{round(lat, 3)}:{round(lon, 3)}:{fetch_r}"
 
     cached_hit = _cache_get(cache_key)
     if cached_hit is not None:
