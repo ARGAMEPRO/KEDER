@@ -102,13 +102,16 @@ def box(k):
     n = N[k]
     c = COL[n["color"]]
     fs = 12.5 if n["small"] else 15
+    compact = n["h"] < 52
+    ty = n["y"] + (11 if compact else 24) if n["sub"] else n["y"] + n["h"] / 2 + 5
     parts = [f'<g class="node"><rect x="{n["x"]}" y="{n["y"]}" width="{n["w"]}" height="{n["h"]}" rx="9" '
              f'fill="#fff" stroke="{c}" stroke-width="1.8"/>',
              f'<rect x="{n["x"]}" y="{n["y"]}" width="5" height="{n["h"]}" rx="2.5" fill="{c}"/>',
-             f'<text x="{n["x"] + 14}" y="{n["y"] + (24 if n["sub"] else n["h"] / 2 + 5)}" class="t" '
+             f'<text x="{n["x"] + 14}" y="{ty}" class="t" '
              f'fill="{c}" font-size="{fs}">{escape(n["title"])}</text>']
     if n["sub"]:
-        parts.append(f'<text x="{n["x"] + 14}" y="{n["y"] + 42}" class="s">{escape(n["sub"])}</text>')
+        sy = n["y"] + 29 if compact else n["y"] + 42
+        parts.append(f'<text x="{n["x"] + 14}" y="{sy}" class="s">{escape(n["sub"])}</text>')
     parts.append("</g>")
     return "".join(parts)
 
@@ -180,3 +183,122 @@ svg = f'''<svg xmlns="http://www.w3.org/2000/svg" width="{W}" height="{H}" viewB
 
 OUT.write_text(svg, encoding="utf-8")
 print(f"{OUT} — {len(svg)/1024:.0f} KB, nodes {len(N)}, edges {len(edges)}")
+
+
+# --- PNG-версия (та же геометрия, рисуется Pillow) ---------------------------
+FONT = "/System/Library/Fonts/Supplemental/Arial Unicode.ttf"
+
+
+def render_png(scale: float = 1.6, path: Path | None = None) -> Path:
+    from PIL import Image, ImageDraw, ImageFont
+
+    out = path or OUT.with_suffix(".png")
+    S = scale
+    img = Image.new("RGB", (int(W * S), int(H * S)), "#fbfbfd")
+    d = ImageDraw.Draw(img)
+
+    def f(sz):
+        return ImageFont.truetype(FONT, int(sz * S))
+
+    f_title, f_sub, f_col = f(22), f(13), f(12)
+    f_t, f_s, f_lbl = f(14), f(11), f(10.5)
+
+    d.text((40 * S, 30 * S), "Путь запроса: инфраструктура вокруг точки", font=f_title, fill="#111827")
+    d.text((40 * S, 60 * S), "GET /api/v1/geo/infrastructure → geo_context → infrastructure_near → Overpass / Geoapify / 2GIS / кэш",
+           font=f_sub, fill="#6b7280")
+    for x, y, label in [(40, 580, "КЛИЕНТ"), (280, 580, "ВХОД"), (530, 580, "БЭКЕНД"),
+                        (800, 440, "ЦЕПОЧКА"), (1050, 150, "ПРОВАЙДЕРЫ"), (1600, 450, "КЭШИ")]:
+        d.text((x * S, y * S), label, font=f_col, fill="#9ca3af")
+
+    # рёбра
+    for a, b, label, dashed in EDGE_LIST:
+        A, B = N[a], N[b]
+        x1, y1 = A["x"] + A["w"], A["y"] + A["h"] / 2
+        x2, y2 = B["x"], B["y"] + B["h"] / 2
+        if x2 < x1:
+            x1, y1 = A["x"], A["y"] + A["h"] / 2
+            x2, y2 = B["x"] + B["w"], B["y"] + B["h"] / 2
+        dx = max(40, abs(x2 - x1) / 2)
+        c1, c2 = (x1 + dx, y1), (x2 - dx, y2)
+        stroke = COL.get(A["color"], "#555")
+        pts = []
+        for i in range(25):
+            t = i / 24
+            mt = 1 - t
+            px = mt ** 3 * x1 + 3 * mt * mt * t * c1[0] + 3 * mt * t * t * c2[0] + t ** 3 * x2
+            py = mt ** 3 * y1 + 3 * mt * mt * t * c1[1] + 3 * mt * t * t * c2[1] + t ** 3 * y2
+            pts.append((px * S, py * S))
+        if dashed:
+            for i in range(0, len(pts) - 1, 4):
+                d.line(pts[i:i + 2] if len(pts[i:i + 2]) > 1 else [pts[i], pts[i]], fill=stroke, width=int(1.5 * S))
+        else:
+            d.line(pts, fill=stroke, width=int(1.5 * S), joint="curve")
+        # стрелка
+        ax, ay = pts[-1]
+        bx, by = pts[-3]
+        import math as _m
+        ang = _m.atan2(ay - by, ax - bx)
+        size = 7 * S
+        d.polygon([(ax, ay),
+                   (ax - size * _m.cos(ang - 0.4), ay - size * _m.sin(ang - 0.4)),
+                   (ax - size * _m.cos(ang + 0.4), ay - size * _m.sin(ang + 0.4))], fill="#6b7280")
+        if label:
+            mx, my = (x1 + x2) / 2, (y1 + y2) / 2 - 6
+            tw = d.textlength(label, font=f_lbl)
+            d.text((mx * S - tw / 2, my * S), label, font=f_lbl, fill="#4b5563")
+
+    # узлы
+    for k, n in N.items():
+        x, y, w, h = n["x"] * S, n["y"] * S, n["w"] * S, n["h"] * S
+        c = COL[n["color"]]
+        d.rounded_rectangle([x, y, x + w, y + h], radius=9 * S, fill="white", outline=c, width=int(1.8 * S))
+        d.rounded_rectangle([x, y, x + 5 * S, y + h], radius=2.5 * S, fill=c)
+        compact = n["h"] < 52
+        ty = y + ((11 if compact else 24) * S if n["sub"] else h / 2 - 8 * S)
+        d.text((x + 14 * S, ty), n["title"], font=f_t, fill=c)
+        if n["sub"]:
+            d.text((x + 14 * S, y + ((29 if compact else 42) * S)), n["sub"], font=f_s, fill="#6b7280")
+
+    img.save(out, "PNG", optimize=True)
+    return out
+
+
+EDGE_LIST = [
+    ("browser", "fetch", "клик по городу", False),
+    ("fetch", "nginx", "/api/v1", False),
+    ("nginx", "fastapi", "proxy_pass", False),
+    ("fastapi", "ctx", "", False),
+    ("ctx", "infra", "gather", False),
+    ("ctx", "weather", "gather", False),
+    ("ctx", "reverse", "gather", False),
+    ("ctx", "nearby", "gather", False),
+    ("infra", "osm", "задача 1: 1.5 с форы", False),
+    ("osm", "m_de", "", False),
+    ("osm", "m_zde", "", False),
+    ("osm", "m_mail", "", False),
+    ("osm", "m_relay", "", False),
+    ("osm", "m_kumi", "", False),
+    ("osm", "m_jp", "", False),
+    ("osm", "m_coffee", "", False),
+    ("m_relay", "relay_up1", "", True),
+    ("m_relay", "relay_up2", "", True),
+    ("m_relay", "relay_up3", "", True),
+    ("infra", "geo", "параллельно", False),
+    ("geo", "g_med", "", False),
+    ("geo", "g_power", "", False),
+    ("geo", "g_prod", "", False),
+    ("geo", "g_air", "", False),
+    ("geo", "g_mass", "", False),
+    ("infra", "gis", "TWOGIS_KEY", False),
+    ("infra", "final", "строки", False),
+    ("osm", "c_ovp", "кэш ответа", True),
+    ("osm", "c_neg", "падение", True),
+    ("final", "c_mem", "первый непустой", True),
+    ("final", "c_sql", "если все упали", True),
+    ("final", "resp", "120 объектов", False),
+    ("resp", "browser", "JSON", False),
+]
+
+if __name__ == "__main__":
+    png = render_png()
+    print(f"{png} — {png.stat().st_size / 1024:.0f} KB")

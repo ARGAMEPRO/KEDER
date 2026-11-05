@@ -94,21 +94,25 @@ const EMPTY = { type: 'FeatureCollection', features: [] }
 // Базовые тайлы: Яндекс (доступен из РФ, без ключа), затем 2ГИС как резерв —
 // openfreemap/Esri/OSM из российских сетей заблокированы.
 const TILES = {
-  // Только Яндекс: резервный 2ГИС отдавал одинаковую картинку на все x/y —
-  // получалась «мозаика из повторяющихся квадратов».
+  // OSM-тайлы в Web Mercator: координаты и подложка совпадают.
+  // Тайлы Яндекса отдаются в EPSG:3395 — на широте Москвы это сдвиг ~35 км,
+  // из-за него все точки оказывались «выше города», поэтому они убраны.
   map: [
-    'https://core-renderer-tiles.maps.yandex.net/tiles?l=map&x={x}&y={y}&z={z}&scale=1&lang=ru_RU',
+    'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+    'https://a.tile.openstreetmap.fr/osmfr/{z}/{x}/{y}.png',
+    'https://tile.openstreetmap.de/{z}/{x}/{y}.png',
   ],
   sat: [
-    'https://core-sat.maps.yandex.net/tiles?l=sat&v=3.700.0&x={x}&y={y}&z={z}&scale=1&lang=ru_RU',
+    'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
   ],
 }
 // Растровые тайлы светлые, поэтому тёмная тема не меняет источник, а гасит его.
 const DARK_RASTER = {
-  'raster-brightness-min': 0.02,
-  'raster-brightness-max': 0.38,
-  'raster-contrast': 0.18,
-  'raster-saturation': -0.35,
+  'raster-brightness-min': 0.18,
+  'raster-brightness-max': 0.72,
+  'raster-contrast': 0.05,
+  'raster-saturation': -0.18,
+  'raster-hue-rotate': 180,
 }
 const rasterStyle = (tiles, id, attribution, dark = false) => ({
   version: 8,
@@ -119,11 +123,11 @@ const rasterStyle = (tiles, id, attribution, dark = false) => ({
   ],
 })
 const STYLE = {
-  light: rasterStyle(TILES.map, 'base', '© Яндекс'),
-  dark: rasterStyle(TILES.map, 'base', '© Яндекс', true),
+  light: rasterStyle(TILES.map, 'base', '© OpenStreetMap'),
+  dark: rasterStyle(TILES.map, 'base', '© OpenStreetMap', true),
 }
 // Спутниковый базовый слой: те же Яндекс-тайлы, ключ не нужен
-const SAT = rasterStyle(TILES.sat, 'sat', '© Яндекс')
+const SAT = rasterStyle(TILES.sat, 'sat', '© Esri')
 // Палитра объектов критической инфраструктуры (для точек МЧС на карте)
 const INFRA_COLOR = {
   nuclear: '#8B0000', hydro_dam: '#8B0000', refinery: '#8B0000',
