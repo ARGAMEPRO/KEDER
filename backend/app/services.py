@@ -1739,6 +1739,45 @@ def _resolve_font() -> str | None:
     return None
 
 
+def _map_png(lat: float, lon: float, size=(660, 380), z: int = 13) -> bytes:
+    """Static map of the incident area: Yandex raster tiles + a red marker."""
+    import math
+
+    from PIL import Image, ImageDraw
+
+    tile_url = "https://core-renderer-tiles.maps.yandex.net/tiles"
+    n = 2 ** z
+    rad = math.radians(max(-85.05, min(85.05, lat)))
+    px = (lon + 180.0) / 360.0 * n * 256
+    py = (1 - math.log(math.tan(rad) + 1 / math.cos(rad)) / math.pi) / 2 * n * 256
+    w, h = size
+    x0, y0 = px - w / 2, py - h / 2
+    tx0, ty0 = int(x0 // 256), int(y0 // 256)
+    tx1, ty1 = int((x0 + w) // 256), int((y0 + h) // 256)
+    canvas = Image.new("RGB", ((tx1 - tx0 + 1) * 256, (ty1 - ty0 + 1) * 256), (225, 225, 225))
+    with httpx.Client(timeout=8, headers={"User-Agent": "Mozilla/5.0 (KEDR report)"}) as client:
+        for tx in range(tx0, tx1 + 1):
+            for ty in range(ty0, ty1 + 1):
+                try:
+                    r = client.get(tile_url, params={"l": "map", "x": tx, "y": ty, "z": z,
+                                                     "scale": 1, "lang": "ru_RU"})
+                    if r.status_code == 200:
+                        canvas.paste(Image.open(io.BytesIO(r.content)).convert("RGB"),
+                                     ((tx - tx0) * 256, (ty - ty0) * 256))
+                except Exception as exc:
+                    log.warning("map tile %s/%s/%s unavailable: %s", z, tx, ty, exc)
+    left, top = int(x0 - tx0 * 256), int(y0 - ty0 * 256)
+    img = canvas.crop((left, top, left + w, top + h))
+    draw = ImageDraw.Draw(img)
+    cx, cy = w // 2, h // 2
+    draw.ellipse([cx - 9, cy - 9, cx + 9, cy + 9], fill=(200, 25, 25), outline=(255, 255, 255), width=3)
+    draw.line([cx - 14, cy, cx + 14, cy], fill=(200, 25, 25), width=2)
+    draw.line([cx, cy - 14, cx, cy + 14], fill=(200, 25, 25), width=2)
+    out = io.BytesIO()
+    img.save(out, "PNG")
+    return out.getvalue()
+
+
 def make_pdf(i, uploads) -> bytes:
     from reportlab.lib import colors
     from reportlab.lib.pagesizes import A4
@@ -1792,6 +1831,13 @@ def make_pdf(i, uploads) -> bytes:
             story += [RLImage(str(img), width=170 * mm, height=95 * mm, kind="proportional"), Spacer(1, 6 * mm)]
         except Exception as exc:
             log.warning("pdf image could not be embedded: %s", exc)
+    try:
+        map_png = _map_png(i.lat, i.lon)
+        story += [Paragraph("Карта района", ss["Heading2"]),
+                  RLImage(io.BytesIO(map_png), width=170 * mm, height=98 * mm),
+                  Paragraph("Картографическая подложка © Яндекс", ss["Normal"]), Spacer(1, 4 * mm)]
+    except Exception as exc:
+        log.warning("pdf map could not be rendered: %s", exc)
     story += [Table(info, colWidths=[60 * mm, 110 * mm], style=style), Spacer(1, 4 * mm)]
     if i.weather_fallback:
         story.append(Paragraph("Метеоданные недоступны на момент формирования отчёта.", ss["Normal"]))
