@@ -1126,8 +1126,6 @@ async def nearby(lat, lon, radius_m=20000):
                      ttl=int(os.getenv("NEAR_TTL") or 1800)),
             timeout=float(os.getenv("NEAR_BUDGET_SEC") or 4))
     except Exception as exc:
-        if isinstance(exc, asyncio.TimeoutError):
-            _cool_all_mirrors()
         log.warning("nearby query failed: %s", exc)
         data = {"elements": []}
 
@@ -1612,10 +1610,12 @@ async def infrastructure_near(lat, lon, radius_m=15000, hazard_radius_m=50000):
     rows: list[dict] = []
     source = "none"
 
-    async def _osm_rows():
+    async def _osm_rows(attempt: int = 0):
+        # The public mirrors take up to ~30 s for this query, so the OSM leg gets
+        # a generous timeout; it runs in the background anyway.
         data = await overpass(_INFRA_Q.format(t=t, r=fetch_r, lat=lat, lon=lon),
-                              key=f"infra:{round(lat, 3)}:{round(lon, 3)}:{fetch_r}",
-                              ttl=int(os.getenv("INFRA_TTL") or 1800), timeout=t + 5)
+                              key=f"infra:{round(lat, 3)}:{round(lon, 3)}:{fetch_r}:{attempt}",
+                              ttl=int(os.getenv("INFRA_TTL") or 1800), timeout=t + 20)
         return _rows_from_overpass(data, lat, lon, radius_m, critical_radius_m, hazard_radius_m)
 
     # Overpass is the best data but often blocked from RU, so it gets a short
@@ -1651,22 +1651,45 @@ async def infrastructure_near(lat, lon, radius_m=15000, hazard_radius_m=50000):
         if not rows:
             log.warning("infra: fallback providers returned nothing for %.4f,%.4f", lat, lon)
 
-    if not osm_task.done():
-        osm_task.cancel()
-        _cool_all_mirrors()  # the mirrors missed their slot, stop paying for them
+    def _finalize(items: list[dict]) -> list[dict]:
+        for row in items:
+            if "distance_km" not in row:
+                row["distance_km"] = round(haversine_km(lat, lon, row["lat"], row["lon"]), 2)
+        items = [r for r in items
+                 if r["distance_km"] * 1000 <= _allowed_radius(r["kind"], radius_m, critical_radius_m, hazard_radius_m)]
+        items.sort(key=lambda r: (-r["criticality"], r["distance_km"]))
+        return items[:120]
 
     if not rows:
         cached = pcache_get(cache_key)
         if cached:
             rows, source = cached, "cache"
 
-    for row in rows:
-        if "distance_km" not in row:
-            row["distance_km"] = round(haversine_km(lat, lon, row["lat"], row["lon"]), 2)
-    rows = [r for r in rows
-            if r["distance_km"] * 1000 <= _allowed_radius(r["kind"], radius_m, critical_radius_m, hazard_radius_m)]
-    rows.sort(key=lambda r: (-r["criticality"], r["distance_km"]))
-    rows = rows[:120]
+    rows = _finalize(rows)
+
+    # OSM answers are much richer but the public mirrors can take ~25 s. Instead
+    # of making the user wait (or dropping the answer), keep the request running
+    # in the background and let the next call pick the full data set up.
+    if not osm_task.done() and source in ("geoapify", "2gis"):
+        async def _warm_from_osm():
+            # Public mirrors are flaky, and this costs the user nothing: retry a
+            # couple of times before giving up on the richer OSM data set.
+            for attempt in range(int(os.getenv("OSM_REFRESH_ATTEMPTS") or 3)):
+                try:
+                    osm_rows = await (osm_task if attempt == 0 else _osm_rows(attempt))
+                except Exception:
+                    osm_rows = None
+                full = _finalize(osm_rows or [])
+                if full:
+                    _cache_put(cache_key, (full, "osm"), int(os.getenv("INFRA_TTL") or 1800))
+                    pcache_put(cache_key, full, int(os.getenv("INFRA_CACHE_TTL") or 30 * 86400))
+                    log.info("infra: OSM copy for %.4f,%.4f is ready (%d rows)", lat, lon, len(full))
+                    return
+                await asyncio.sleep(float(os.getenv("OSM_REFRESH_PAUSE") or 20))
+
+        asyncio.create_task(_warm_from_osm())
+    elif not osm_task.done():
+        osm_task.cancel()
 
     if rows and source != "cache":
         pcache_put(cache_key, rows, int(os.getenv("INFRA_CACHE_TTL") or 30 * 86400))

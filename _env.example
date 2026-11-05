@@ -116,7 +116,7 @@ NOMINATIM_USER_AGENT=kedr-fire-monitor/1.0 (contact: change-me@your-domain.com)
 
 # --- Overpass / кэш --------------------------------------------------------
 OVERPASS_URLS=https://overpass-api.de/api/interpreter,https://maps.mail.ru/osm/tools/overpass/api/interpreter
-OVERPASS_TIMEOUT=12
+OVERPASS_TIMEOUT=25
 OVERPASS_CONCURRENCY=4
 # Здоровье зеркал: упавшее зеркало уходит в охлаждение (fails * BASE, не больше MAX)
 OVERPASS_COOLDOWN_BASE=120
@@ -147,6 +147,9 @@ INFRA_OSM_WAIT=2
 INFRA_FALLBACK_WAIT=15
 # Бюджет запроса населённых пунктов (иначе блокировка держит весь ответ)
 NEAR_BUDGET_SEC=4
+# Фоновое обогащение из OSM: попытки и пауза между ними
+OSM_REFRESH_ATTEMPTS=3
+OSM_REFRESH_PAUSE=20
 SEARCH_TTL=3600
 CLEAR_DEDUPE_KM=0.5
 
