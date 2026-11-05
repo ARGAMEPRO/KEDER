@@ -516,13 +516,18 @@ def _candidate(kind: str, crit: int, name, la, lo, **extra) -> dict:
 # Two groups keep pharmacies/kindergartens from crowding hospitals out of the limit.
 # Separate requests per group: in a big city hospitals alone can fill the whole
 # limit, and then power plants / refineries would never come back.
+# (categories, limit, radius cap) — `production` in a metropolis is enormous:
+# a 30 km request there takes ~9 s and the connection is dropped mid-response,
+# so industry is capped to the radius that actually matters for the panel.
 _GEOAPIFY_GROUPS = (
-    ",".join(("healthcare.hospital", "healthcare.clinic_or_praxis",
-              "service.fire_station", "service.police")),
-    ",".join(("power.plant", "power.substation", "production")),
-    "airport",  # must be queried alone: combined with other categories it returns nothing
-    ",".join(("healthcare.pharmacy", "healthcare.dentist",
-              "education.school", "childcare.kindergarten")),
+    (",".join(("healthcare.hospital", "healthcare.clinic_or_praxis",
+               "service.fire_station", "service.police")), 200, None, 10),
+    (",".join(("power.plant", "power.substation")), 200, 15000, 6),
+    # `production` is the heaviest category: in Moscow even 5 km takes ~15 s.
+    ("production", 100, 6000, 6),
+    ("airport", 50, None, 6),  # alone: combined with other categories it returns nothing
+    (",".join(("healthcare.pharmacy", "healthcare.dentist",
+               "education.school", "childcare.kindergarten")), 200, None, 10),
 )
 
 
@@ -549,15 +554,17 @@ def _geoapify_kind(props: dict) -> tuple[str, int]:
     return "other", _CRITICALITY["other"]
 
 
-async def _geoapify_batch(lat, lon, radius_m: int, categories: str, limit: int = 200):
+async def _geoapify_batch(lat, lon, radius_m: int, categories: str, limit: int = 200,
+                         radius_cap: int | None = None, timeout: float = 10):
     key = geoapify_key()
-    base = {"filter": f"circle:{lon:.6f},{lat:.6f},{int(radius_m)}", "limit": limit, "apiKey": key, "lang": "ru"}
-    r = await http_client().get("https://api.geoapify.com/v2/places",
-                                params={**base, "categories": categories}, timeout=10)
-    if r.status_code == 400:  # category set not in the current plan -> ask for everything
-        r = await http_client().get("https://api.geoapify.com/v2/places", params=base, timeout=12)
-    r.raise_for_status()
-    return (r.json() or {}).get("features") or []
+    r = min(int(radius_m), radius_cap) if radius_cap else int(radius_m)
+    base = {"filter": f"circle:{lon:.6f},{lat:.6f},{r}", "limit": limit, "apiKey": key, "lang": "ru"}
+    resp = await http_client().get("https://api.geoapify.com/v2/places",
+                                   params={**base, "categories": categories}, timeout=timeout)
+    if resp.status_code == 400:  # category set not in the current plan -> ask for everything
+        resp = await http_client().get("https://api.geoapify.com/v2/places", params=base, timeout=timeout + 2)
+    resp.raise_for_status()
+    return (resp.json() or {}).get("features") or []
 
 
 async def geoapify_near(lat, lon, radius_m: int) -> list[dict]:
@@ -565,7 +572,8 @@ async def geoapify_near(lat, lon, radius_m: int) -> list[dict]:
         return []
     try:
         batches = await asyncio.gather(
-            *(_geoapify_batch(lat, lon, radius_m, group) for group in _GEOAPIFY_GROUPS),
+            *(_geoapify_batch(lat, lon, radius_m, cats, limit, cap, tmo)
+              for cats, limit, cap, tmo in _GEOAPIFY_GROUPS),
             return_exceptions=True,
         )
     except Exception as exc:  # pragma: no cover - gather already isolates failures
