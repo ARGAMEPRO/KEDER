@@ -28,9 +28,10 @@ const KIND_META = {
 
 
 
-export default function CityInfoPanel({ t, place, data, onClose, onFocus }) {
+export default function CityInfoPanel({ t, place, data, onClose, onFocus, error, onRetry }) {
   if (!place) return null
   const title = place.name.split(', ')[0]
+  const kindLabel = (kind, fallback) => t['infra_' + kind] || fallback
   return (
     <motion.aside initial={{ x: '1rem', opacity: 0 }} animate={{ x: 0, opacity: 1 }} exit={{ x: '1rem', opacity: 0 }} transition={spring}
       className="flex min-h-0 flex-col gap-3 overflow-hidden border-l border-border/50 bg-card/95 p-4 backdrop-blur">
@@ -42,7 +43,13 @@ export default function CityInfoPanel({ t, place, data, onClose, onFocus }) {
         </div>
         <button type="button" onClick={onClose} className="min-h-11 shrink-0 cursor-pointer rounded-full px-3 text-sm font-semibold text-muted-foreground hover:bg-muted">{t.close}</button>
       </div>
-      {!data && <div className="flex items-center gap-2 text-sm text-muted-foreground"><Loader2 className="h-4 w-4 animate-spin" aria-hidden />{t.city_loading}</div>}
+      {!data && !error && <div className="flex items-center gap-2 text-sm text-muted-foreground"><Loader2 className="h-4 w-4 animate-spin" aria-hidden />{t.city_loading}</div>}
+      {!data && error && (
+        <div className="space-y-2">
+          <p role="alert" className="text-sm text-destructive">{t.city_infra_offline}</p>
+          <button type="button" onClick={onRetry} className="min-h-11 cursor-pointer rounded-full border border-border/60 px-4 text-sm font-semibold hover:bg-muted">{t.retry}</button>
+        </div>
+      )}
       {data && (
         <>
           {data.region && <p className="text-sm text-muted-foreground">{data.region}</p>}
@@ -58,8 +65,9 @@ export default function CityInfoPanel({ t, place, data, onClose, onFocus }) {
               <div role="alert" className="mb-3 rounded-xl border border-destructive/60 bg-red-500/10 p-3">
                 <p className="flex items-center gap-2 font-semibold text-destructive">
                   <TriangleAlert className="h-4 w-4" aria-hidden />
-                  В зоне — критический объект уровня {data.max_criticality}
+                  {t.city_critical_in_zone} {data.max_criticality}
                 </p>
+                <p className="mt-1 text-xs font-normal text-muted-foreground">{t.critical_levels}</p>
               </div>
             )}
             {data.groups && Object.keys(data.groups).length > 0 ? (
@@ -73,7 +81,7 @@ export default function CityInfoPanel({ t, place, data, onClose, onFocus }) {
                       <details key={kind} className="rounded-xl border border-border/50 bg-card" open={meta.crit >= 4}>
                         <summary className="flex cursor-pointer items-center gap-2 p-3">
                           <Icon className={`h-4 w-4 ${meta.color}`} aria-hidden />
-                          <span className="font-semibold">{meta.label}</span>
+                          <span className="font-semibold">{kindLabel(kind, meta.label)}</span>
                           <span className="ml-auto font-mono text-xs">{items.length}</span>
                         </summary>
                         <ul className="border-t border-border/30 p-2 text-sm">
@@ -82,12 +90,12 @@ export default function CityInfoPanel({ t, place, data, onClose, onFocus }) {
                               key={i}
                               onClick={() => onFocus?.(f.lat, f.lon, 16)}
                               className="flex cursor-pointer items-center gap-2 rounded px-2 py-1 hover:bg-muted"
-                              title="Показать на карте"
+                              title={t.show_on_map}
                             >
                               <span className="truncate">{f.name}</span>
                               <span className="ml-auto font-mono text-xs text-muted-foreground">{f.distance_km} км</span>
-                              {f.beds && <span className="font-mono text-xs">🛏 {f.beds}</span>}
-                              {f.emergency && <span className="text-red-500" title="Круглосуточно">●</span>}
+                              {f.beds != null && <span className="font-mono text-xs">🛏 {f.beds}</span>}
+                              {f.emergency && <span className="text-red-500" title={t.round_the_clock}>●</span>}
                               {f.phone && (
                                 <a href={`tel:${f.phone}`} onClick={(e) => e.stopPropagation()} className="font-mono text-xs underline">
                                   {f.phone}
@@ -101,7 +109,10 @@ export default function CityInfoPanel({ t, place, data, onClose, onFocus }) {
                   })}
               </div>
             ) : data.source === 'none' ? (
-              <p role="alert" className="text-sm text-destructive">{t.city_infra_offline}</p>
+              <div className="space-y-2">
+                <p role="alert" className="text-sm text-destructive">{t.city_infra_offline}</p>
+                <button type="button" onClick={onRetry} className="min-h-11 cursor-pointer rounded-full border border-border/60 px-4 text-sm font-semibold hover:bg-muted">{t.retry}</button>
+              </div>
             ) : (
               <p className="text-sm text-muted-foreground">{t.city_infra_empty}</p>
             )}

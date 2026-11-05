@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { AnimatePresence, motion, useDragControls } from 'framer-motion'
 import { Check, Flame, MapPinOff, Trash2, X } from 'lucide-react'
 import { api } from './api'
@@ -26,16 +26,25 @@ function Sheet({ open, setOpen, title, children }) {
 }
 
 function ReviewCard({ i, t, busy, review, setSel }) {
+  const [err, setErr] = useState('')
+  const act = async (verdict) => {
+    setErr('')
+    try { await review(i, verdict) } catch (e) { setErr(e.message) }
+  }
   return (
     <Card lift={false} className="space-y-3 p-4">
-      {i.annotated_path && <img src={`/uploads/${i.annotated_path}`} alt="" loading="lazy" className="aspect-video w-full rounded-xl object-cover" />}
+      {(i.annotated_url || i.annotated_path) && (
+        <img src={i.annotated_url || `/uploads/${i.annotated_path}`} alt="" loading="lazy"
+          className="aspect-video w-full rounded-xl object-cover" />
+      )}
       <div className="flex items-center justify-between"><Badge status={i.status}>{t['s_' + i.status]}</Badge><span className="font-mono text-sm">{i.source_ai} {pct(i.confidence)}</span></div>
       {i.lat != null ? <Coord i={i} t={t} /> : <p className="text-sm text-destructive">{t.no_gps}</p>}
       <div className="flex flex-wrap gap-2">
-        <Btn disabled={busy === i.id} onClick={() => review(i, 'confirm')}><Check className="h-4 w-4" aria-hidden />{t.confirm}</Btn>
-        <Btn v="warn" disabled={busy === i.id} onClick={() => review(i, 'false_alarm')}><X className="h-4 w-4" aria-hidden />{t.falseAlarm}</Btn>
+        <Btn disabled={busy === i.id} onClick={() => act('confirm')}><Check className="h-4 w-4" aria-hidden />{t.confirm}</Btn>
+        <Btn v="warn" disabled={busy === i.id} onClick={() => act('false_alarm')}><X className="h-4 w-4" aria-hidden />{t.falseAlarm}</Btn>
         {i.lat != null && <Btn v="ghost" onClick={() => setSel(i.id)}>{t.open_map}</Btn>}
       </div>
+      {err && <p role="alert" className="text-sm text-destructive">{err}</p>}
     </Card>
   )
 }
@@ -61,17 +70,26 @@ function List({ items, sel, setSel, t, onDelete }) {
 }
 
 function ForesterPanel({ t, items, sel, setSel, reload, pick, role }) {
-  const [tab, setTab] = useState('queue'), [busy, setBusy] = useState(0)
+  const [tab, setTab] = useState('queue'), [busy, setBusy] = useState(0), [err, setErr] = useState('')
   const queue = (items || []).filter((i) => i.status === 'PENDING_VERIFICATION')
   const active = (items || []).filter((i) => i.lat != null && i.status !== 'FALSE_ALARM')
   const all = items || []
-  const review = async (i, verdict) => { setBusy(i.id); try { await api(`/incidents/${i.id}/review`, { json: { verdict } }); await reload() } finally { setBusy(0) } }
-  const del = async (i) => { if (!confirm(t.delete_confirm)) return; await api(`/incidents/${i.id}`, { method: 'DELETE' }); await reload() }
+  const falseAlarms = all.filter((i) => i.status === 'FALSE_ALARM')
+  const review = async (i, verdict) => { setBusy(i.id); setErr(''); try { await api(`/incidents/${i.id}/review`, { json: { verdict }, timeoutMs: 180000 }); await reload() } finally { setBusy(0) } }
+  const del = async (i) => {
+    if (!confirm(t.delete_confirm)) return
+    setErr('')
+    try { await api(`/incidents/${i.id}`, { method: 'DELETE' }); await reload() } catch (e) { setErr(e.message) }
+  }
   return (
     <div className="space-y-4">
-      <Tabs id="f-tabs" value={tab} onChange={setTab} tabs={[['queue', `${t.tab_queue} (${queue.length})`], ['maplist', `${t.tab_map} (${active.length})`], ['all', `${t.tab_all} (${all.length})`], ['manual', t.tab_new], ['upload', t.tab_upload]]} />
+      <Tabs id="f-tabs" value={tab} onChange={setTab} tabs={[['queue', `${t.tab_queue} (${queue.length})`], ['maplist', `${t.tab_map} (${active.length})`], ['all', `${t.tab_all} (${all.length})`], ['false', `${t.tab_false} (${falseAlarms.length})`], ['manual', t.tab_new], ['upload', t.tab_upload]]} />
+      {err && <p role="alert" className="text-sm text-destructive">{err}</p>}
       {tab === 'upload' && <Report t={t} multiple onDone={reload} />}
       {tab === 'manual' && <ManualIncidentForm t={t} pick={pick} role={role} onDone={reload} />}
+      {tab === 'false' && (falseAlarms.length
+        ? <List items={falseAlarms} sel={sel} setSel={setSel} t={t} onDelete={del} />
+        : <Empty t={t} />)}
       {tab === 'maplist' && <List items={active} sel={sel} setSel={setSel} t={t} onDelete={del} />}
       {tab === 'all' && <List items={all} sel={sel} setSel={setSel} t={t} onDelete={del} />}
       {tab === 'queue' && (!queue.length ? <Empty t={t} /> : queue.map((i) => (
@@ -85,14 +103,20 @@ function ForesterPanel({ t, items, sel, setSel, reload, pick, role }) {
 }
 
 function MchsPanel({ t, items, setSel, pick, reload, role }) {
-  const [tab, setTab] = useState('hot'), [busy, setBusy] = useState(0)
+  const [tab, setTab] = useState('hot'), [busy, setBusy] = useState(0), [err, setErr] = useState('')
   const hot = (items || []).filter((i) => ['CRITICAL_ALERT', 'CONFIRMED'].includes(i.status))
   const queue = (items || []).filter((i) => i.status === 'PENDING_VERIFICATION')
-  const del = async (i) => { if (!confirm(t.delete_confirm)) return; await api(`/incidents/${i.id}`, { method: 'DELETE' }); await reload() }
-  const review = async (i, verdict) => { setBusy(i.id); try { await api(`/incidents/${i.id}/review`, { json: { verdict } }); await reload() } finally { setBusy(0) } }
+  const falseAlarms = (items || []).filter((i) => i.status === 'FALSE_ALARM')
+  const del = async (i) => {
+    if (!confirm(t.delete_confirm)) return
+    setErr('')
+    try { await api(`/incidents/${i.id}`, { method: 'DELETE' }); await reload() } catch (e) { setErr(e.message) }
+  }
+  const review = async (i, verdict) => { setBusy(i.id); setErr(''); try { await api(`/incidents/${i.id}/review`, { json: { verdict }, timeoutMs: 180000 }); await reload() } finally { setBusy(0) } }
   return (
     <div className="space-y-4">
-      <Tabs id="m-tabs" value={tab} onChange={setTab} tabs={[['hot', `${t.tab_hot} (${hot.length})`], ['queue', `${t.tab_review} (${queue.length})`], ['new', t.tab_new]]} />
+      <Tabs id="m-tabs" value={tab} onChange={setTab} tabs={[['hot', `${t.tab_hot} (${hot.length})`], ['queue', `${t.tab_review} (${queue.length})`], ['false', `${t.tab_false} (${falseAlarms.length})`], ['new', t.tab_new]]} />
+      {err && <p role="alert" className="text-sm text-destructive">{err}</p>}
       {tab === 'new' ? (
         <ManualIncidentForm t={t} pick={pick} role={role} onDone={reload} />
       ) : tab === 'queue' ? (items === null ? <Skeleton /> : !queue.length ? <Empty t={t} /> : queue.map((i) => (
@@ -116,25 +140,46 @@ export default function Workspace({ t, role, dark, lang, tick, go }) {
   const xl = useMedia('(min-width: 80rem)')
   const [items, setItems] = useState(null), [sel, setSel] = useState(null), [pick, setPick] = useState(null), [open, setOpen] = useState(false)
   const [city, setCity] = useState(null), [infra, setInfra] = useState([]), [cityData, setCityData] = useState(null)
+  const [cityErr, setCityErr] = useState(''), [cityTry, setCityTry] = useState(0)
+  const [mapErr, setMapErr] = useState('')
   // Item 2: the forester feed keeps near-misses (CLEAR) and no-GPS rows; MCHS only sees actionable fires.
   const reload = useCallback(() => {
     const path = role === 'forester' ? '/incidents?include_clear=1' : staff ? '/incidents' : '/incidents/public'
     return api(path).then(setItems).catch(() => setItems((x) => x ?? []))
   }, [staff, role])
   useEffect(() => { reload(); const id = setInterval(reload, 30000); return () => clearInterval(id) }, [reload, tick])
-useEffect(() => {
-  if (!city) { setInfra([]); setCityData(null); return }
-  api(`/geo/infrastructure?lat=${city.lat}&lon=${city.lon}`)
-    .then((d) => { setInfra(d.facilities || []); setCityData(d) })
-    .catch(() => { setInfra([]); setCityData(null) })
-}, [city])
-  const [focus, setFocus] = useState(null)  // { lat, lon, zoom }
   useEffect(() => {
+    if (!city) { setInfra([]); setCityData(null); return }
+    // Ignore stale responses: selecting cities quickly must not show the wrong one.
+    const ctrl = new AbortController()
+    setCityData(null); setCityErr('')
+    api(`/geo/infrastructure?lat=${city.lat}&lon=${city.lon}`, { signal: ctrl.signal, timeoutMs: 60000 })
+      .then((d) => { if (!ctrl.signal.aborted) { setInfra(d.facilities || []); setCityData(d) } })
+      .catch((e) => { if (!ctrl.signal.aborted) { setInfra([]); setCityData(null); setCityErr(e.message) } })
+    return () => ctrl.abort()
+    // cityTry forces a refetch when the operator presses "повторить" after an OSM outage
+  }, [city, cityTry])
+  const [focus, setFocus] = useState(null)  // { lat, lon, zoom }
+  // Fly to an incident only when the selection changes. `items` is a fresh array
+  // after every 30s poll, and depending on it dragged the map back to the
+  // incident while the user was looking somewhere else.
+  const focusedId = useRef(null)
+  useEffect(() => {
+    if (sel == null || focusedId.current === sel) return
     const i = (items || []).find((x) => x.id === sel)
-    if (i?.lat != null) setFocus({ lat: i.lat, lon: i.lon, zoom: 11 })
+    if (i?.lat != null) {
+      focusedId.current = sel
+      setFocus({ lat: i.lat, lon: i.lon, zoom: 11 })
+    }
   }, [sel, items])
   const select = (id) => { setSel(id); setOpen(false) }
   const canPick = role === 'mchs' || role === 'forester'
+  // Deletion straight from a map popup (used for false alarms in particular).
+  const deleteFromMap = async (i) => {
+    if (!confirm(t.delete_confirm)) return
+    setMapErr('')
+    try { await api(`/incidents/${i.id}`, { method: 'DELETE' }); await reload() } catch (e) { setMapErr(e.message) }
+  }
   const panel = role === 'mchs' ? <MchsPanel t={t} items={items} setSel={select} pick={pick} reload={reload} role={role} />
     : role === 'forester' ? <ForesterPanel t={t} items={items} sel={sel} setSel={select} reload={reload} pick={pick} role={role} />
     : (
@@ -149,6 +194,7 @@ useEffect(() => {
     <div className={`relative h-workspace md:h-workspace-md ${wide ? 'grid' : ''} ${showCity ? 'xl:grid-cols-[minmax(0,22rem)_minmax(0,1fr)_minmax(0,20rem)]' : 'lg:grid-cols-workspace'}`}>
       {wide && <aside className="min-h-0 space-y-4 overflow-y-auto border-r border-border/50 p-4">{panel}</aside>}
       <RuMap items={items || []} dark={dark} lang={lang} t={t} focus={focus} onPick={canPick ? setPick : undefined} picked={pick}
+        onDelete={canPick ? deleteFromMap : undefined}
         onCitySelect={role === 'mchs' ? setCity : undefined} infra={role === 'mchs' ? infra : []} className="h-full rounded-none border-0" />
       <AnimatePresence>
         {showCity && (
@@ -157,10 +203,17 @@ useEffect(() => {
             place={city}
             data={cityData}
             onClose={() => setCity(null)}
+            error={cityErr}
+            onRetry={() => setCityTry((n) => n + 1)}
             onFocus={(lat, lon, zoom = 16) => setFocus({ lat, lon, zoom })}
           />
         )}
       </AnimatePresence>
+      {mapErr && (
+        <p role="alert" className="absolute bottom-3 left-1/2 z-30 -translate-x-1/2 rounded-full bg-destructive px-4 py-2 text-xs font-semibold text-white">
+          {mapErr}
+        </p>
+      )}
       {!wide && <Sheet open={open} setOpen={setOpen} title={t.peek}>{panel}</Sheet>}
     </div>
   )

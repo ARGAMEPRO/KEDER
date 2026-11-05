@@ -1,8 +1,9 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
+import AnalysisDialog from './components/AnalysisDialog'
 import { motion } from 'framer-motion'
 import { ArrowUp, Copy, Crosshair, FileDown, MapPin, Navigation, RefreshCw, Trash2 } from 'lucide-react'
 import { api } from './api'
-import { Badge, Btn, Card } from './ui'
+import { Badge, Btn, Card, Modal } from './ui'
 
 export const pct = (c) => `${Math.round(c * 100)}%`
 
@@ -24,15 +25,13 @@ export function FixLocation({ i, t, onFixed }) {
   useEffect(() => {
     if (q.trim().length < 2) { setPlaces([]); return }
     const ctrl = new AbortController()
-    const t = setTimeout(async () => {
+    const timer = setTimeout(async () => {
       try {
-        const r = await fetch(`/api/v1/geo/search?q=${encodeURIComponent(q)}`, { signal: ctrl.signal })
-        if (r.ok) setPlaces(await r.json())
-      } catch (e) {
-        if (e.name !== 'AbortError') setPlaces([])
-      }
+        const rows = await api(`/geo/search?q=${encodeURIComponent(q)}`, { signal: ctrl.signal, timeoutMs: 15000 })
+        setPlaces(Array.isArray(rows) ? rows : [])
+      } catch (e) { if (e.status !== 0) setPlaces([]) }
     }, 250)
-    return () => { clearTimeout(t); ctrl.abort() }
+    return () => { clearTimeout(timer); ctrl.abort() }
   }, [q])
   const geo = () => navigator.geolocation.getCurrentPosition(
     (p) => { setLat(p.coords.latitude); setLon(p.coords.longitude) }, () => setErr(t.geoFail))
@@ -75,10 +74,25 @@ export function FixLocation({ i, t, onFixed }) {
 }
 
 export function Incident({ i: init, t, canPdf, onFocus, onDelete }) {
-  const [i, setI] = useState(init), [busy, setBusy] = useState(false)
+  const [i, setI] = useState(init), [busy, setBusy] = useState(false), [err, setErr] = useState('')
   useEffect(() => setI(init), [init])
-  const refresh = async () => { setBusy(true); try { setI(await api(`/incidents/${i.id}/refresh`, { method: 'POST', json: {} })) } catch { /* keep card */ } setBusy(false) }
-  const pdf = async () => { const b = await api(`/incidents/${i.id}/report.pdf`, { raw: true }); const a = document.createElement('a'); a.href = URL.createObjectURL(b); a.download = `kedr-${i.id}.pdf`; a.click() }
+  const refresh = async () => {
+    setBusy(true); setErr('')
+    try { setI(await api(`/incidents/${i.id}/refresh`, { method: 'POST', json: {}, timeoutMs: 180000 })) }
+    catch (e) { setErr(e.message) } finally { setBusy(false) }
+  }
+  const pdf = async () => {
+    setBusy(true); setErr(''); let url
+    try {
+      const blob = await api(`/incidents/${i.id}/report.pdf`, { raw: true, timeoutMs: 120000 })
+      url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url; a.download = `kedr-${i.id}.pdf`; a.click()
+    } catch (e) { setErr(e.message) } finally {
+      if (url) URL.revokeObjectURL(url)
+      setBusy(false)
+    }
+  }
   const h = i.hazard_geojson?.properties || {}
   return (
     <Card lift={false} className="space-y-3 p-4">
@@ -98,6 +112,29 @@ export function Incident({ i: init, t, canPdf, onFocus, onDelete }) {
         </div>
       ))}
       {h.mode === 'circle' && <p className="text-sm text-muted-foreground">{t.circle_note}</p>}
+      {h.ros_m_per_min != null && (
+        <div className="space-y-1 rounded-xl border border-border/40 bg-muted/40 p-3">
+          <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">{t.fire_behavior}</p>
+          <div className="flex flex-wrap gap-x-4 gap-y-1 font-mono text-xs">
+            <span>{t.fuel_model}: {h.fuel_model}</span>
+            <span>{t.fuel_moisture}: {(h.fuel_moisture * 100).toFixed(1)}%</span>
+            <span>{t.ros}: {h.ros_m_per_min} {t.m_per_min}</span>
+            <span>{t.intensity}: {h.fireline_intensity_kw_m} {t.kw_per_m} ({t['intensity_' + h.intensity_class] || h.intensity_class})</span>
+            <span>{t.flame}: {h.flame_length_m} {t.m_short}</span>
+            {h.burn_minutes != null && <span>{t.burn_window}: {h.burn_minutes} {t.min_short || 'мин'}</span>}
+          </div>
+          <div className="flex flex-wrap gap-x-4 gap-y-1 font-mono text-xs">
+            {h.diameter_m != null && <span>{t.diameter}: {h.diameter_m} {t.m_short}</span>}
+            {h.area_ha != null && <span>{t.area}: {h.area_ha} {t.ha}</span>}
+            {h.perimeter_km != null && <span>{t.perimeter}: {h.perimeter_km} км</span>}
+            {h.head_distance_m != null && <span>{t.head_dist}: {h.head_distance_m} {t.m_short}</span>}
+          </div>
+          {h.fuel_estimated && <p className="text-xs text-destructive">{t.fuel_estimated}</p>}
+          {h.enrichment_degraded && !h.fuel_estimated && (
+            <p className="text-xs text-muted-foreground">{t.osm_degraded}</p>
+          )}
+        </div>
+      )}
       {i.lat != null && (
         <div className="space-y-2">
           <h3 className="font-semibold">{t.evac}</h3>
@@ -120,51 +157,31 @@ export function Incident({ i: init, t, canPdf, onFocus, onDelete }) {
       )}
       <div className="flex flex-wrap gap-2">
         {onFocus && i.lat != null && <Btn v="ghost" onClick={() => onFocus(i.id)}><Crosshair className="h-4 w-4" aria-hidden />{t.open_map}</Btn>}
-        {canPdf && i.lat != null && <Btn onClick={pdf}><FileDown className="h-4 w-4" aria-hidden />{t.pdf}</Btn>}
+        {canPdf && i.lat != null && <Btn disabled={busy} onClick={pdf}><FileDown className="h-4 w-4" aria-hidden />{t.pdf}</Btn>}
         {onDelete && <Btn v="warn" onClick={onDelete}><Trash2 className="h-4 w-4" aria-hidden />{t.delete}</Btn>}
       </div>
+      {err && <p role="alert" className="text-sm text-destructive">{err}</p>}
     </Card>
   )
 }
 
 export function Report({ t, multiple, onDone, canPdf }) {
-  const [files, setFiles] = useState([]), [ll, setLl] = useState(null), [res, setRes] = useState([]), [err, setErr] = useState(''), [busy, setBusy] = useState(false)
-  const [q, setQ] = useState(''), [places, setPlaces] = useState([]), [note, setNote] = useState('')
-  const geo = () => navigator.geolocation.getCurrentPosition((p) => setLl([p.coords.latitude, p.coords.longitude]), () => setErr(t.geoFail))
-  useEffect(() => {
-    if (q.trim().length < 2) { setPlaces([]); return }
-    const ctrl = new AbortController()
-    const t = setTimeout(async () => {
-      try {
-        const r = await fetch(`/api/v1/geo/search?q=${encodeURIComponent(q)}`, { signal: ctrl.signal })
-        if (r.ok) setPlaces(await r.json())
-      } catch (e) {
-        if (e.name !== 'AbortError') setPlaces([])
-      }
-    }, 250)
-    return () => { clearTimeout(t); ctrl.abort() }
-  }, [q])
-  const pickPlace = (p) => { setLl([p.lat, p.lon]); setQ(p.name.split(', ')[0]); setPlaces([]) }
-  const fixLocation = async (incident) => {
-    if (!ll) { setErr(t.loc_required); return null }
-    return api(`/incidents/${incident.id}/location`, { method: 'PATCH', json: { lat: ll[0], lon: ll[1] } })
+  const [files, setFiles] = useState([])
+  const [current, setCurrent] = useState(null)   // the file being analysed right now
+  const [res, setRes] = useState([])
+  const [err, setErr] = useState('')
+  const queue = useRef([])
+
+  const next = () => {
+    const f = queue.current.shift()
+    if (!f) { setCurrent(null); if (res.length) setTimeout(() => onDone?.(), 3000); return }
+    setCurrent(f)
   }
-  const submit = async () => {
-    setBusy(true); setErr(''); const done = []
-    for (const f of files) {
-      const fd = new FormData(); fd.append('file', f)
-      if (ll) { fd.append('lat', ll[0]); fd.append('lon', ll[1]) }
-      if (note.trim()) fd.append('location_note', note.trim())
-      try {
-        let row = await api('/incidents/report', { body: fd })
-        if (row.lat == null && ll) row = await fixLocation(row)
-        else if (row.lat == null) setErr(t.loc_after)
-        done.push(row)
-      } catch (e) { setErr(e.message); break }
-    }
-    setRes(done); setBusy(false)
-    setTimeout(() => onDone?.(), 4000)   // ← один раз, после цикла
+  const start = () => {
+    setRes([]); setErr(''); queue.current = [...files]; next()
   }
+  const created = (row) => { setRes((r) => [...r, row]); next() }
+
   return (
     <div className="space-y-4">
       <Card lift={false} className="space-y-2 p-4 text-sm text-muted-foreground">
@@ -174,26 +191,25 @@ export function Report({ t, multiple, onDone, canPdf }) {
       <motion.label whileHover={{ scale: 1.01 }} className="grid min-h-40 cursor-pointer place-items-center gap-1 rounded-2xl border-2 border-dashed border-border/60 bg-muted p-6 text-center focus-within:ring-2 focus-within:ring-ring">
         <input type="file" multiple={multiple} accept="image/*,video/*" className="sr-only" onChange={(e) => setFiles([...e.target.files])} />
         <span className="font-semibold">{t.upload}</span>
-        <span className="text-sm text-muted-foreground">{files.length ? files.map((f) => f.name).join(', ') : t.analyze_p}</span>
+        <span className="text-sm text-muted-foreground">{files.length ? files.map((f) => f.name).join(', ') : t.upload}</span>
       </motion.label>
-      <div className="space-y-2">
-        <label className="block space-y-1"><span className="text-sm font-semibold">{t.loc_search}</span>
-          <input className="field" value={q} onChange={(e) => setQ(e.target.value)} placeholder={t.search_ph} /></label>
-        {places.length > 0 && (
-          <ul className="max-h-40 overflow-auto rounded-xl border border-border/50 bg-card text-sm">
-            {places.map((p, k) => <li key={k}><button type="button" className="min-h-11 w-full cursor-pointer px-3 py-2 text-left hover:bg-muted" onClick={() => pickPlace(p)}>{p.name}</button></li>)}
-          </ul>
-        )}
-        <div className="flex flex-wrap items-center gap-2">
-          <Btn v="ghost" onClick={geo}>{t.geo}</Btn>
-          {ll && <span className="font-mono text-sm">{ll[0].toFixed(6)}, {ll[1].toFixed(6)}</span>}
-        </div>
-        <label className="block space-y-1"><span className="text-sm font-semibold">{t.loc_note}</span>
-          <input className="field" value={note} onChange={(e) => setNote(e.target.value)} placeholder={t.loc_note_ph} /></label>
-      </div>
-      <Btn shimmer className="w-full" disabled={busy || !files.length} onClick={submit}>{busy ? t.wait : t.send}</Btn>
+      <Btn shimmer className="w-full" disabled={!files.length || !!current} onClick={start}>
+        {current ? t.analyzing : t.send}
+      </Btn>
       {err && <p role="alert" className="text-destructive">{err}</p>}
       {res.map((r) => <Incident key={r.id} i={r} t={t} canPdf={canPdf} />)}
+
+      <Modal open={!!current} onClose={() => { queue.current = []; setCurrent(null) }} title={t.analyze_result} closeLabel={t.close}>
+        {current && (
+          <AnalysisDialog
+            key={current.name + current.size}
+            t={t}
+            file={current}
+            onCancel={() => { queue.current = []; setCurrent(null) }}
+            onCreated={created}
+          />
+        )}
+      </Modal>
     </div>
   )
 }

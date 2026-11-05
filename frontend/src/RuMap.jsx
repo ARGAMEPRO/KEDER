@@ -2,7 +2,9 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import maplibregl from 'maplibre-gl'
 import 'maplibre-gl/dist/maplibre-gl.css'
 import { feature } from 'topojson-client'
-import world from 'world-atlas/countries-50m.json'
+// 110m instead of 50m: the outline is a stylistic overlay, and this removes
+// ~630 KB from the bundle that must be parsed before the map can render.
+import world from 'world-atlas/countries-110m.json'
 import disputed from './disputed.json'
 import { AnimatePresence, animate, motion } from 'framer-motion'
 import { Layers, Search } from 'lucide-react'
@@ -73,19 +75,15 @@ const RU_FC = toFC(RU_PIECES)
 const DISPUTED_FC = toFC(DISPUTED_PIECES)
 // Маска = мир минус Россия минус спорные территории; контуры переводим в дырки (обход по часовой стрелке)
 const createMask = () => {
+  const worldRing = [[-180, -85], [180, -85], [180, 85], [-180, 85], [-180, -85]]
   try {
-    const world = [[[-180, -85], [180, -85], [180, 85], [-180, 85], [-180, -85]]]
-    // Only include valid pieces and ensure they form proper holes
-    const validPieces = [...RU_PIECES, ...DISPUTED_PIECES].filter(p => p && p.length >= 3)
-    if (validPieces.length === 0) {
-      console.warn('[kedr] No valid pieces for mask')
-      return { type: 'Feature', geometry: { type: 'Polygon', coordinates: [world] } }
-    }
-    // Create a simpler mask without holes to avoid rendering issues
-    return { type: 'Feature', geometry: { type: 'Polygon', coordinates: [world] } }
+    // Маска = мир минус Россия минус спорные территории: контуры становятся дырками.
+    const holes = [...RU_PIECES, ...DISPUTED_PIECES].filter((p) => p && p.length >= 3)
+    if (!holes.length) return { type: 'Feature', geometry: { type: 'Polygon', coordinates: [worldRing] } }
+    return { type: 'Feature', geometry: { type: 'Polygon', coordinates: [worldRing, ...holes] } }
   } catch (e) {
     console.error('[kedr] Mask creation error:', e)
-    return { type: 'Feature', geometry: { type: 'Polygon', coordinates: [[[-180, -85], [180, -85], [180, 85], [-180, 85], [-180, -85]]] } }
+    return { type: 'Feature', geometry: { type: 'Polygon', coordinates: [worldRing] } }
   }
 }
 const MASK = createMask()
@@ -142,7 +140,27 @@ const dot = (status) => {
   if (!matchMedia('(prefers-reduced-motion: reduce)').matches) animate(halo, { scale: [1, 2.4], opacity: [0.5, 0] }, { duration: status === 'CRITICAL_ALERT' ? 1.4 : 2.4, repeat: Infinity, ease: 'easeOut' })
   return wrap
 }
-const popup = (i) => { const d = document.createElement('div'); d.textContent = `#${i.id}  ${i.lat.toFixed(6)}, ${i.lon.toFixed(6)}`; return d }
+const popup = (i, t, onDelete) => {
+  const d = document.createElement('div')
+  d.className = 'space-y-1 text-sm'
+  const line = document.createElement('p')
+  line.className = 'font-mono text-xs'
+  line.textContent = `#${i.id}  ${i.lat.toFixed(6)}, ${i.lon.toFixed(6)}`
+  d.append(line)
+  const st = document.createElement('p')
+  st.className = 'text-xs opacity-70'
+  st.textContent = t?.['s_' + i.status] || i.status
+  d.append(st)
+  if (onDelete) {
+    const b = document.createElement('button')
+    b.type = 'button'
+    b.textContent = t?.delete || 'Delete'
+    b.className = 'mt-1 cursor-pointer rounded-full border border-red-400/60 px-2 py-1 text-xs font-semibold text-red-500'
+    b.onclick = () => onDelete(i)
+    d.append(b)
+  }
+  return d
+}
 const infraPopup = (p, t) => {
   const d = document.createElement('div')
   d.className = 'space-y-0.5 text-sm'
@@ -202,9 +220,12 @@ function addCustomLayers(m, maskColor) {
   }
 }
 
-export default function RuMap({ items = [], dark, lang = 'ru', onPick, picked, focus, className = 'h-map', t, onCitySelect, infra = [] }) {
+export default function RuMap({ items = [], dark, lang = 'ru', onPick, picked, focus, className = 'h-map', t, onCitySelect, infra = [], onDelete }) {
   const el = useRef(), map = useRef(), marks = useRef([]), pin = useRef(), cur = useRef(), pickRef = useRef(onPick)
   const cityRef = useRef(onCitySelect), tRef = useRef(t), ipop = useRef(null)
+  const delRef = useRef(onDelete)
+  delRef.current = onDelete
+  const viewRef = useRef(null)   // preserves center/zoom when the map is re-created
   const [failed, setFailed] = useState(false), [ready, setReady] = useState(false)
   const [q, setQ] = useState(() => {
     try { return localStorage.getItem('kedr_search') || '' } catch { return '' }
@@ -216,6 +237,8 @@ export default function RuMap({ items = [], dark, lang = 'ru', onPick, picked, f
   tRef.current = t
 
   const maskColor = base === 'sat' ? '#141414' : dark ? '#2a2a2a' : '#DDE5C8'
+  const maskRef = useRef(maskColor)
+  maskRef.current = maskColor
 
   const bindMap = useCallback((m) => {
     m.on('click', (e) => {
@@ -236,7 +259,6 @@ export default function RuMap({ items = [], dark, lang = 'ru', onPick, picked, f
     setReady(false)
     let m
     try {
-      console.log('[kedr] Initializing map with base:', base, 'dark:', dark)
       m = new maplibregl.Map({
         container: el.current,
         style: base === 'sat' ? SAT : dark ? STYLE.dark : STYLE.light,
@@ -246,32 +268,43 @@ export default function RuMap({ items = [], dark, lang = 'ru', onPick, picked, f
         minZoom: 2,
         attributionControl: { compact: true },
       })
-      console.log('[kedr] Map initialized successfully')
     } catch (e) { console.error('[kedr map] init', e); setFailed(true); return }
     m.addControl(new maplibregl.NavigationControl({ showCompass: false }), 'top-right')
     m.on('error', (e) => console.error('[kedr map]', e.error || e))
     m.on('load', () => {
-      console.log('[kedr] Map loaded, adding custom layers')
       try {
-        addCustomLayers(m, maskColor)
+        addCustomLayers(m, maskRef.current)
         m.on('mouseenter', 'infra', () => { m.getCanvas().style.cursor = 'pointer' })
         m.on('mouseleave', 'infra', () => { m.getCanvas().style.cursor = '' })
+        // Restore the previous viewport when the map had to be re-created.
+        if (viewRef.current) m.jumpTo({ center: viewRef.current.center, zoom: viewRef.current.zoom })
         setReady(true)
       } catch (e) {
         console.error('[kedr] Error in map load handler:', e)
-        setReady(true)  // Still set ready to prevent blocking
+        setReady(true)
       }
     })
     bindMap(m)
     map.current = m
     return () => {
       try {
+        viewRef.current = { center: m.getCenter().toArray(), zoom: m.getZoom() }
+      } catch { /* map already gone */ }
+      try {
         m.remove()
       } catch (e) {
         console.error('[kedr] Error removing map:', e)
       }
+      map.current = null
     }
-  }, [dark, bindMap, maskColor, base])
+  }, [dark, bindMap, base])
+
+  // Theme changes only need a paint update, not a full map rebuild.
+  useEffect(() => {
+    const m = map.current
+    if (!ready || !m) return
+    try { if (m.getLayer('mask')) m.setPaintProperty('mask', 'fill-color', maskColor) } catch { /* ignore */ }
+  }, [maskColor, ready])
 
   useEffect(() => {
     if (!ready) return
@@ -290,49 +323,50 @@ export default function RuMap({ items = [], dark, lang = 'ru', onPick, picked, f
 
   useEffect(() => {
     if (!ready) return
+    const m = map.current   // NOTE: must not shadow the `map` ref (TDZ: `const map = map.current`)
+    if (!m) return
     marks.current.forEach((x) => x.remove()); marks.current = []
     items.filter((i) => i.lat != null).forEach((i) => marks.current.push(
       new maplibregl.Marker({ element: dot(i.status) })
-        .setLngLat([i.lon, i.lat]).setPopup(new maplibregl.Popup({ offset: 14 }).setDOMContent(popup(i))).addTo(map.current)))
-    map.current.getSource('haz').setData({ type: 'FeatureCollection', features: items.filter((i) => i.hazard_geojson)
-      .map((i) => (i.hazard_geojson.type === 'Feature' ? i.hazard_geojson : { type: 'Feature', geometry: i.hazard_geojson, properties: {} })) })
+        .setLngLat([i.lon, i.lat]).setPopup(new maplibregl.Popup({ offset: 14 }).setDOMContent(popup(i, tRef.current, delRef.current))).addTo(m)))
+    const hazSource = m.getSource('haz')
+    if (hazSource) {
+      hazSource.setData({ type: 'FeatureCollection', features: items.filter((i) => i.hazard_geojson)
+        .map((i) => (i.hazard_geojson.type === 'Feature' ? i.hazard_geojson : { type: 'Feature', geometry: i.hazard_geojson, properties: {} })) })
+    }
   }, [items, ready])
 
   useEffect(() => {
-    if (!ready || !map.current.getSource('infra')) return
-    map.current.getSource('infra').setData({
+    if (!ready || !map.current) return
+    map.current.getSource('infra')?.setData({
       type: 'FeatureCollection',
       features: (infra || []).map((f) => ({ type: 'Feature', geometry: { type: 'Point', coordinates: [f.lon, f.lat] }, properties: { kind: f.kind, name: f.name, distance_km: f.distance_km } })),
     })
   }, [infra, ready])
 
   useEffect(() => {
-    if (!ready || !map.current.getSource('cells')) return
-    const cellsFeatures = []
-    items.forEach((i) => {
-      if (i.hazard_geojson && i.hazard_geojson.properties && i.hazard_geojson.properties.cells) {
-        i.hazard_geojson.properties.cells.forEach((cell) => {
-          // Use polygon if available, otherwise fall back to point
-          if (cell.polygon) {
-            cellsFeatures.push({
-              type: 'Feature',
-              geometry: { type: 'Polygon', coordinates: [cell.polygon] },
-              properties: { intensity: cell.intensity, fuel: cell.fuel }
-            })
-          } else {
-            cellsFeatures.push({
-              type: 'Feature',
-              geometry: { type: 'Point', coordinates: [cell.lon, cell.lat] },
-              properties: { intensity: cell.intensity, fuel: cell.fuel }
-            })
-          }
+    if (!ready || !map.current) return
+    const source = map.current.getSource('cells')
+    if (!source) return
+    // Hard cap: 300 incidents x 2000 cells would freeze the browser.
+    const MAX_CELL_FEATURES = 20000
+    const features = []
+    for (const i of items) {
+      const cells = i?.hazard_geojson?.properties?.cells
+      if (!Array.isArray(cells)) continue
+      for (const cell of cells) {
+        if (features.length >= MAX_CELL_FEATURES) break
+        features.push({
+          type: 'Feature',
+          geometry: cell.polygon
+            ? { type: 'Polygon', coordinates: [cell.polygon] }
+            : { type: 'Point', coordinates: [cell.lon, cell.lat] },
+          properties: { intensity: cell.intensity, fuel: cell.fuel },
         })
       }
-    })
-    map.current.getSource('cells').setData({
-      type: 'FeatureCollection',
-      features: cellsFeatures
-    })
+      if (features.length >= MAX_CELL_FEATURES) break
+    }
+    source.setData({ type: 'FeatureCollection', features })
   }, [items, ready])
 
   useEffect(() => {
@@ -345,10 +379,10 @@ export default function RuMap({ items = [], dark, lang = 'ru', onPick, picked, f
     const ctrl = new AbortController()
     const t = setTimeout(async () => {
       try {
-        const r = await fetch(`/api/v1/geo/search?q=${encodeURIComponent(q)}`, { signal: ctrl.signal })
-        if (r.ok) setRes(await r.json())
+        const rows = await api(`/geo/search?q=${encodeURIComponent(q)}`, { signal: ctrl.signal, timeoutMs: 15000 })
+        setRes(Array.isArray(rows) ? rows : [])
       } catch (e) {
-        if (e.name !== 'AbortError') setRes([])
+        if (e.status !== 0) setRes([])  // keep the last results on a timeout
       }
     }, 250)
     return () => { clearTimeout(t); ctrl.abort() }
@@ -426,7 +460,7 @@ export default function RuMap({ items = [], dark, lang = 'ru', onPick, picked, f
         </div>
       )}
       <div className="absolute bottom-3 left-3 z-10 hidden gap-3 rounded-full bg-card/90 px-4 py-1 text-xs shadow-soft lg:flex">
-        {Object.entries(COLOR).map(([k, c]) => <span key={k} className="flex items-center gap-2"><StatusDot status={k} />{t?.['s_' + k]}</span>)}
+        {Object.entries(COLOR).map(([k]) => <span key={k} className="flex items-center gap-2"><StatusDot status={k} />{t?.['s_' + k]}</span>)}
       </div>
       <span ref={cur} className="absolute bottom-16 right-3 z-10 hidden rounded-lg bg-card/90 px-2 py-1 font-mono text-xs lg:block">—</span>
     </div>

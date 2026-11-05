@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { AnimatePresence, motion, useMotionTemplate, useMotionValue } from 'framer-motion'
 import { Flame, X } from 'lucide-react'
 
@@ -50,10 +50,26 @@ export function Card({ children, className = '', lift = true, ...p }) {
 }
 
 export function Tabs({ tabs, value, onChange, id }) {
+  const refs = useRef([])
+  const move = (delta) => {
+    const idx = tabs.findIndex(([k]) => k === value)
+    const next = (idx + delta + tabs.length) % tabs.length
+    const [key] = tabs[next]
+    onChange(key)
+    refs.current[next]?.focus()
+  }
+  const onKeyDown = (e) => {
+    if (e.key === 'ArrowRight' || e.key === 'ArrowDown') { e.preventDefault(); move(1) }
+    else if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') { e.preventDefault(); move(-1) }
+    else if (e.key === 'Home') { e.preventDefault(); move(-tabs.findIndex(([k]) => k === value)) }
+    else if (e.key === 'End') { e.preventDefault(); move(tabs.length - 1 - tabs.findIndex(([k]) => k === value)) }
+  }
   return (
     <div role="tablist" className="flex gap-1 rounded-full bg-muted p-1">
-      {tabs.map(([k, label]) => (
-        <button key={k} role="tab" aria-selected={value === k} onClick={() => onChange(k)} className="relative min-h-11 flex-1 cursor-pointer rounded-full px-4 text-sm font-semibold">
+      {tabs.map(([k, label], i) => (
+        <button key={k} ref={(el) => { refs.current[i] = el }} role="tab" id={`${id}-tab-${k}`}
+          aria-selected={value === k} tabIndex={value === k ? 0 : -1} onKeyDown={onKeyDown}
+          onClick={() => onChange(k)} className="relative min-h-11 flex-1 cursor-pointer rounded-full px-4 text-sm font-semibold">
           {value === k && <motion.span layoutId={id} transition={spring} className="absolute inset-0 rounded-full bg-card shadow-soft" />}
           <span className="relative">{label}</span>
         </button>
@@ -62,13 +78,40 @@ export function Tabs({ tabs, value, onChange, id }) {
   )
 }
 
+const FOCUSABLE = 'a[href], button:not([disabled]), textarea, input, select, [tabindex]:not([tabindex="-1"])'
+
 export function Modal({ open, onClose, title, closeLabel, children }) {
-  useEffect(() => { if (!open) return; const k = (e) => e.key === 'Escape' && onClose(); addEventListener('keydown', k); return () => removeEventListener('keydown', k) }, [open, onClose])
+  const box = useRef(null)
+  const restoreTo = useRef(null)
+
+  useEffect(() => {
+    if (!open) return
+    restoreTo.current = document.activeElement
+    const previousOverflow = document.body.style.overflow
+    document.body.style.overflow = 'hidden'
+    const focusables = () => Array.from(box.current?.querySelectorAll(FOCUSABLE) || [])
+    focusables()[0]?.focus()
+    const onKey = (e) => {
+      if (e.key === 'Escape') { onClose(); return }
+      if (e.key !== 'Tab') return
+      const items = focusables()
+      if (!items.length) return
+      const first = items[0], last = items[items.length - 1]
+      if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus() }
+      else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus() }
+    }
+    addEventListener('keydown', onKey)
+    return () => {
+      removeEventListener('keydown', onKey)
+      document.body.style.overflow = previousOverflow
+      restoreTo.current?.focus?.()
+    }
+  }, [open, onClose])
   return (
     <AnimatePresence>
       {open && (
         <motion.div className="fixed inset-0 z-50 grid place-items-end bg-foreground/40 p-4 backdrop-blur-sm sm:place-items-center" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={onClose}>
-          <motion.div role="dialog" aria-modal="true" aria-label={title} onClick={(e) => e.stopPropagation()} initial={{ y: '2rem', opacity: 0, scale: 0.98 }} animate={{ y: 0, opacity: 1, scale: 1 }} exit={{ y: '2rem', opacity: 0 }} transition={spring}
+          <motion.div ref={box} role="dialog" aria-modal="true" aria-label={title} onClick={(e) => e.stopPropagation()} initial={{ y: '2rem', opacity: 0, scale: 0.98 }} animate={{ y: 0, opacity: 1, scale: 1 }} exit={{ y: '2rem', opacity: 0 }} transition={spring}
             className="w-full max-w-md rounded-3xl border border-border/50 bg-card p-6 shadow-soft">
             <div className="mb-4 flex items-center justify-between gap-4">
               <h2 className="text-lg font-extrabold">{title}</h2>

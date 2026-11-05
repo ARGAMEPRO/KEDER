@@ -1,14 +1,18 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
-import { AlertTriangle, Camera, Check, MapPin, Sparkles } from 'lucide-react'
+import { AlertTriangle, Camera, Check, MapPin, ShieldCheck, Sparkles } from 'lucide-react'
 import { api } from '../api'
 import { Btn, Card, spring } from '../ui'
 
 /** Step-style manual incident form (21st.dev-inspired glass card flow). */
 export default function ManualIncidentForm({ t, pick, role, onDone, onNeedPick }) {
   const [file, setFile] = useState(null), [preview, setPreview] = useState(''), [busy, setBusy] = useState(false), [err, setErr] = useState('')
-  const [verdict, setVerdict] = useState('confirm')
+  const [verdict, setVerdict] = useState('confirm'), [override, setOverride] = useState(false)
   const forester = role === 'forester', mchs = role === 'mchs'
+
+  // Never leak the object URL of the preview.
+  useEffect(() => () => { if (preview) URL.revokeObjectURL(preview) }, [preview])
+
   const onFile = (f) => {
     setFile(f)
     if (preview) URL.revokeObjectURL(preview)
@@ -24,13 +28,13 @@ export default function ManualIncidentForm({ t, pick, role, onDone, onNeedPick }
         fd.append('lat', pick[0]); fd.append('lon', pick[1])
         if (file) fd.append('file', file)
         if (mchs) fd.append('verdict', verdict)
-        await api('/incidents/manual-photo', { body: fd })
+        else if (forester && override) fd.append('verdict', 'confirm')
+        await api('/incidents/manual-photo', { body: fd, timeoutMs: 300000 })
       } else {
-        await api('/incidents/manual', { json: { lat: pick[0], lon: pick[1] } })
+        await api('/incidents/manual', { json: { lat: pick[0], lon: pick[1] }, timeoutMs: 180000 })
       }
       onDone?.()
-    } catch (e) { setErr(e.message) }
-    setBusy(false)
+    } catch (e) { setErr(e.message) } finally { setBusy(false) }
   }
   const step = (n) => (
     <span className="mt-0.5 grid h-6 w-6 shrink-0 place-items-center rounded-full bg-primary/10 font-mono text-xs font-bold text-primary ring-1 ring-primary/20" aria-hidden>{n}</span>
@@ -67,6 +71,20 @@ export default function ManualIncidentForm({ t, pick, role, onDone, onNeedPick }
             </AnimatePresence>
           </div>
         </li>
+        {forester && (
+          <li className="flex gap-3">
+            {step(3)}
+            <div className="min-w-0 flex-1 space-y-1">
+              <p className="font-semibold">{t.verdict_forester}</p>
+              <p className="text-xs text-muted-foreground">{t.forester_override_hint}</p>
+              <label className="flex cursor-pointer items-center gap-2 rounded-xl border border-border/60 p-3">
+                <input type="checkbox" className="h-4 w-4" checked={override} onChange={(e) => setOverride(e.target.checked)} />
+                <ShieldCheck className="h-4 w-4 text-primary" aria-hidden />
+                <span className="text-sm font-semibold">{t.forester_override}</span>
+              </label>
+            </div>
+          </li>
+        )}
         {mchs && (
           <li className="flex gap-3">
             {step(3)}
