@@ -1,24 +1,75 @@
 services:
-  backend:
-    build: ./backend
+  db:
+    image: postgres:16-alpine
     env_file:
       - path: .env
-        required: false
+        required: true
     environment:
-      DATABASE_URL: sqlite:////backend/data/kedr.db
+      POSTGRES_DB: ${POSTGRES_DB:-kedr}
+      POSTGRES_USER: ${POSTGRES_USER:-kedr}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}
+    volumes:
+      - kedr-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-kedr} -d ${POSTGRES_DB:-kedr}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    logging: &logging
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+    restart: unless-stopped
+
+  backend:
+    # The image adapts to the machine that builds it (see backend/Dockerfile):
+    #   arm64 -> CPU build of torch (~2.6 GB), native speed
+    #   amd64 -> CUDA build of torch (GPU used if one is available, CPU otherwise)
+    # Force a variant with TORCH_VARIANT=cpu|cuda in .env if needed.
+    build:
+      context: ./backend
+      args:
+        TORCH_VARIANT: ${TORCH_VARIANT:-auto}
+    env_file:
+      - path: .env
+        required: true
+    environment:
+      # The app builds a PostgreSQL URL from these (see app/config.py).
+      # Set DATABASE_URL in .env to override and use SQLite locally.
+      POSTGRES_HOST: db
+      POSTGRES_PORT: "5432"
       MAX_VIDEO_SECONDS: "60"
-    ports: ["8000:8000"]
+    # Deliberately NOT published: the backend must only be reachable through nginx.
+    # For local debugging use:  docker compose exec backend python -c "import urllib.request as u; print(u.urlopen('http://localhost:8000/api/v1/health').read().decode())"
+    expose:
+      - "8000"
     volumes:
       - ./backend/uploads:/backend/uploads
       - ./backend/weights:/backend/weights
-      - kedr-db:/backend/data
+    depends_on:
+      db:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request as u; u.urlopen('http://localhost:8000/api/v1/health', timeout=3)"]
       interval: 15s
       timeout: 5s
-      retries: 5
-      start_period: 40s
-    # deploy: *gpu  # Закомментировано для запуска на CPU (macOS)
+      retries: 10
+      # Generous: the first boot may download the YOLO weights before serving.
+      start_period: 300s
+    logging: *logging
+    # --- GPU (only meaningful on an amd64 host with an NVIDIA card) -------------
+    # 1. Install the NVIDIA driver + nvidia-container-toolkit.
+    # 2. Uncomment the block below and run `docker compose up -d`.
+    # 3. Make sure YOLO_DEVICE=auto in .env (the default) — it will pick cuda:0.
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: 1
+    #           capabilities: [gpu]
     restart: unless-stopped
 
   frontend:
@@ -27,7 +78,14 @@ services:
     depends_on:
       backend:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1/"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    logging: *logging
     restart: unless-stopped
 
 volumes:
-  kedr-db:
+  kedr-pgdata:

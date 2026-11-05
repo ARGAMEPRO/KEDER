@@ -1,7 +1,16 @@
 __pycache__
 *.pyc
+*.pyo
+.pytest_cache
+.ruff_cache
+.venv
 runs
+*.db
+*.sqlite3
 kedr.db
+.env
+.env.*
+data/dev_secret.key
 uploads/images/*
 uploads/false_positives/*
 !uploads/**/.gitkeep
