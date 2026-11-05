@@ -102,17 +102,25 @@ const TILES = {
     'https://a.tile.openstreetmap.fr/osmfr/{z}/{x}/{y}.png',
     'https://tile.openstreetmap.de/{z}/{x}/{y}.png',
   ],
+  // Для тёмной темы — готовые тёмные тайлы Carto; если недоступны,
+  // падаем на OSM и просто приглушаем его краской (без сдвига оттенка).
+  dark: [
+    'https://basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png',
+    'https://a.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png',
+    'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+  ],
   sat: [
     'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
   ],
 }
 // Растровые тайлы светлые, поэтому тёмная тема не меняет источник, а гасит его.
+// hue-rotate делать нельзя: зелень превращается в малину, и карта становится
+// красно-розовой. Только обесцвечивание и лёгкое затемнение.
 const DARK_RASTER = {
-  'raster-brightness-min': 0.18,
-  'raster-brightness-max': 0.72,
-  'raster-contrast': 0.05,
-  'raster-saturation': -0.18,
-  'raster-hue-rotate': 180,
+  'raster-brightness-min': 0.12,
+  'raster-brightness-max': 0.85,
+  'raster-contrast': 0.04,
+  'raster-saturation': -0.55,
 }
 const rasterStyle = (tiles, id, attribution, dark = false) => ({
   version: 8,
@@ -124,7 +132,7 @@ const rasterStyle = (tiles, id, attribution, dark = false) => ({
 })
 const STYLE = {
   light: rasterStyle(TILES.map, 'base', '© OpenStreetMap'),
-  dark: rasterStyle(TILES.map, 'base', '© OpenStreetMap', true),
+  dark: rasterStyle(TILES.dark, 'base', '© OpenStreetMap, © CARTO', true),
 }
 // Спутниковый базовый слой: те же Яндекс-тайлы, ключ не нужен
 const SAT = rasterStyle(TILES.sat, 'sat', '© Esri')
