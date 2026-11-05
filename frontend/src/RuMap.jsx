@@ -74,16 +74,18 @@ const toFC = (rings) => ({ type: 'FeatureCollection', features: rings.map((r) =>
 const RU_FC = toFC(RU_PIECES)
 const DISPUTED_FC = toFC(DISPUTED_PIECES)
 // Маска = мир минус Россия минус спорные территории; контуры переводим в дырки (обход по часовой стрелке)
+const WORLD_RING = [[-180, -85], [180, -85], [180, 85], [-180, 85], [-180, -85]]
+// Маска = мир минус Россия минус спорные территории: контуры становятся дырками.
+const buildMask = (pieces) => {
+  const holes = pieces.filter((p) => p && p.length >= 3)
+  return { type: 'Feature', geometry: { type: 'Polygon', coordinates: [WORLD_RING, ...holes] } }
+}
 const createMask = () => {
-  const worldRing = [[-180, -85], [180, -85], [180, 85], [-180, 85], [-180, -85]]
   try {
-    // Маска = мир минус Россия минус спорные территории: контуры становятся дырками.
-    const holes = [...RU_PIECES, ...DISPUTED_PIECES].filter((p) => p && p.length >= 3)
-    if (!holes.length) return { type: 'Feature', geometry: { type: 'Polygon', coordinates: [worldRing] } }
-    return { type: 'Feature', geometry: { type: 'Polygon', coordinates: [worldRing, ...holes] } }
+    return buildMask([...RU_PIECES, ...DISPUTED_PIECES])
   } catch (e) {
     console.error('[kedr] Mask creation error:', e)
-    return { type: 'Feature', geometry: { type: 'Polygon', coordinates: [worldRing] } }
+    return buildMask([])
   }
 }
 const MASK = createMask()
@@ -92,25 +94,33 @@ const EMPTY = { type: 'FeatureCollection', features: [] }
 // Базовые тайлы: Яндекс (доступен из РФ, без ключа), затем 2ГИС как резерв —
 // openfreemap/Esri/OSM из российских сетей заблокированы.
 const TILES = {
+  // Только Яндекс: резервный 2ГИС отдавал одинаковую картинку на все x/y —
+  // получалась «мозаика из повторяющихся квадратов».
   map: [
     'https://core-renderer-tiles.maps.yandex.net/tiles?l=map&x={x}&y={y}&z={z}&scale=1&lang=ru_RU',
-    'https://tile2.maps.2gis.com/tiles?x={x}&y={y}&z={z}&v=1',
   ],
   sat: [
     'https://core-sat.maps.yandex.net/tiles?l=sat&v=3.700.0&x={x}&y={y}&z={z}&scale=1&lang=ru_RU',
   ],
 }
-const rasterStyle = (tiles, id, attribution) => ({
+// Растровые тайлы светлые, поэтому тёмная тема не меняет источник, а гасит его.
+const DARK_RASTER = {
+  'raster-brightness-min': 0.02,
+  'raster-brightness-max': 0.38,
+  'raster-contrast': 0.18,
+  'raster-saturation': -0.35,
+}
+const rasterStyle = (tiles, id, attribution, dark = false) => ({
   version: 8,
   sources: { [id]: { type: 'raster', tiles, tileSize: 256, maxzoom: 19, attribution } },
   layers: [
-    { id: 'bg', type: 'background', paint: { 'background-color': '#EFEDE8' } },
-    { id, type: 'raster', source: id },
+    { id: 'bg', type: 'background', paint: { 'background-color': dark ? '#12161A' : '#EFEDE8' } },
+    { id, type: 'raster', source: id, paint: dark ? DARK_RASTER : {} },
   ],
 })
 const STYLE = {
   light: rasterStyle(TILES.map, 'base', '© Яндекс'),
-  dark: rasterStyle(TILES.map, 'base', '© Яндекс'),
+  dark: rasterStyle(TILES.map, 'base', '© Яндекс', true),
 }
 // Спутниковый базовый слой: те же Яндекс-тайлы, ключ не нужен
 const SAT = rasterStyle(TILES.sat, 'sat', '© Яндекс')
@@ -190,6 +200,13 @@ function addCustomLayers(m, maskColor) {
       // Add mask layer for non-Russia areas
       m.addSource('mask', { type: 'geojson', data: MASK })
       m.addLayer({ id: 'mask', type: 'fill', source: 'mask', paint: { 'fill-color': maskColor, 'fill-opacity': 0.3 } })
+      // 110m-контур России на детальных тайлах «режет» границу по живому;
+      // 50m подгружается отдельным чанком уже после старта карты.
+      import('world-atlas/countries-50m.json').then(({ default: w50 }) => {
+        const ru50 = feature(w50, w50.objects.countries).features.find((f) => String(f.id) === '643')
+        if (!ru50 || !m.getSource('mask')) return
+        m.getSource('mask').setData(buildMask([...outerRings(ru50.geometry).flatMap(hole), ...DISPUTED_PIECES]))
+      }).catch(() => { /* останемся на 110m */ })
 
       // Add Russia border lines
       m.addSource('ru', { type: 'geojson', data: RU_FC })
@@ -310,7 +327,12 @@ export default function RuMap({ items = [], dark, lang = 'ru', onPick, picked, f
   useEffect(() => {
     const m = map.current
     if (!ready || !m) return
-    try { if (m.getLayer('mask')) m.setPaintProperty('mask', 'fill-color', maskColor) } catch { /* ignore */ }
+    try {
+      if (m.getLayer('mask')) {
+        m.setPaintProperty('mask', 'fill-color', maskColor)
+        m.setPaintProperty('mask', 'fill-opacity', dark ? 0.45 : 0.3)
+      }
+    } catch { /* ignore */ }
   }, [maskColor, ready])
 
   useEffect(() => {
