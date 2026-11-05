@@ -1,46 +1,166 @@
-# --- Режим ---
-APP_ENV=dev                      # production: требует SECRET_KEY, не сидит демо-пользователей
-SECRET_KEY=change-me-in-production
+# =============================================================================
+#  КЕДР — пример конфигурации.  Скопируйте в .env и отредактируйте:
+#      cp _env.example .env
+# =============================================================================
+
+# --- Режим работы -----------------------------------------------------------
+# dev        — удобные значения по умолчанию, демо-аккаунты, /docs доступен
+# production — строгие проверки: требуется сильный SECRET_KEY, /docs выключен
+APP_ENV=dev
+
+# Секрет для подписи JWT. ОСТАВЬТЕ ПУСТЫМ В DEV: приложение само создаст
+# стойкий ключ в backend/data/dev_secret.key (он в .gitignore).
+# В production ПУСТОЕ ЗНАЧЕНИЕ ПРИВЕДЁТ К ОТКАЗУ ЗАПУСКА — это сделано намеренно.
+# Сгенерировать:  python -c "import secrets; print(secrets.token_urlsafe(48))"
+SECRET_KEY=
+
+# Время жизни токена доступа (минуты). После смены пароля все токены отзываются.
 ACCESS_TOKEN_EXPIRE_MINUTES=720
-DATABASE_URL=sqlite:///./kedr.db
+JWT_ISSUER=kedr
+JWT_AUDIENCE=kedr-api
+
+# Минимальная длина пароля (плюс обязательны буква и цифра)
+MIN_PASSWORD_LEN=8
+
+# Разрешённые источники для CORS (через запятую). Пусто = только localhost.
 CORS_ORIGINS=http://localhost:5173,http://localhost:3000
 
-# --- Детекция (RTX 3050) ---
-YOLO_WEIGHTS=
-YOLO_WEIGHTS_URL=                # необязательно: ссылка на .pt, скачается при первом запуске
-YOLO_DEVICE=cuda:0
+# Подсети доверенных прокси. Нужно, чтобы корректно вычислять IP клиента для
+# rate-limit и не доверять подделанному клиентом X-Forwarded-For.
+TRUSTED_PROXY_CIDRS=127.0.0.0/8,::1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,fc00::/7
+
+# --- Архитектура образа -----------------------------------------------------
+# Docker сам определяет архитектуру (arm64 -> CPU-сборка torch ~2.6 ГБ,
+# amd64 -> CUDA-сборка ~6-7 ГБ). Значение auto менять не нужно.
+# cpu  — принудительно CPU (экономит ~3.5 ГБ на x86 без NVIDIA)
+# cuda — принудительно CUDA (нужна NVIDIA-машина)
+TORCH_VARIANT=auto
+
+# --- База данных ------------------------------------------------------------
+# В Docker Compose используется PostgreSQL (сервис db). Значения ниже должны
+# совпадать со строкой подключения.
+POSTGRES_DB=kedr
+POSTGRES_USER=kedr
+# ОБЯЗАТЕЛЬНО смените перед запуском (compose откажется стартовать без него):
+POSTGRES_PASSWORD=change-me-postgres-password
+
+# Явный URL. Оставьте закомментированным — compose соберёт его из POSTGRES_*.
+# Для локального запуска без Docker раскомментируйте SQLite:
+#DATABASE_URL=sqlite:///./kedr.db
+
+# --- Детекция (YOLO) --------------------------------------------------------
+# Путь к весам. Если файла нет, берётся любой *.pt из каталога weights/.
+YOLO_WEIGHTS=weights/yolov8x-fire.pt
+# Ссылка на .pt для автозагрузки при первом старте (необязательно).
+YOLO_WEIGHTS_URL=
+# Контрольная сумма SHA-256 файла весов (настоятельно рекомендуется).
+YOLO_WEIGHTS_SHA256=
+# Максимальный размер скачиваемого файла весов, МБ
+YOLO_WEIGHTS_MAX_MB=2048
+# auto — CUDA если доступна, иначе CPU. Можно задать явно: cuda:0 / cpu
+YOLO_DEVICE=auto
 YOLO_HALF=true
+YOLO_IMGSZ=640
+YOLO_MAX_WIDTH=1280
 FRAME_SAMPLE_FPS=1
+MAX_VIDEO_SECONDS=60
+
+# --- Пороги эскалации (доля уверенности 0..1) -------------------------------
 TIER_PENDING=0.40
 TIER_CRITICAL=0.80
+# Дым — это раннее предупреждение, поэтому пороги строже, чем для открытого огня
+TIER_PENDING_SMOKE=0.60
+TIER_CRITICAL_SMOKE=0.90
 
-# --- Защита ---
+# --- Модель распространения огня -------------------------------------------
+# Шаг сетки клеточного автомата подбирается автоматически в этих пределах, м
+CA_CELL_MIN_M=20
+CA_CELL_MAX_M=200
+# Радиус уже горящего пятна на момент обнаружения, м
+INITIAL_BURN_RADIUS_M=50
+# Окно расчёта: сколько минут пожар распространяется без тушения.
+# Это СЦЕНАРНЫЙ параметр (самый влиятельный для размера зоны), а не свойство топлива.
+HAZARD_BURN_MINUTES=180
+# Максимум ячеек, отдаваемых в API для визуализации
+HAZARD_CELLS_LIMIT=400
+# Уклон местности по типу ландшафта (реальный ЦМР вне рамок проекта), градусы
+SLOPE_FOREST_DEG=8
+SLOPE_MIXED_DEG=5
+SLOPE_URBAN_DEG=2
+SLOPE_FIELD_DEG=3
+# Дороги/реки как информация о барьерах (отдельный запрос к Overpass)
+ENABLE_FIRE_BARRIERS=false
+BARRIER_TTL=86400
+
+# --- Защита ----------------------------------------------------------------
 MAX_UPLOAD_MB=100
 RATE_LIMIT_PER_MIN=10
+RATE_LIMIT_LOGIN=10
+RATE_LIMIT_REGISTER=8
+# Отдавать ли загруженные файлы публично по /uploads (false = только по подписанной ссылке)
+SERVE_UPLOADS_PUBLIC=false
+MEDIA_TOKEN_TTL=3600
 
-# --- Внешние сервисы (без ключей) ---
+# --- Хранение данных -------------------------------------------------------
+# Удалять «чистые» (CLEAR) инциденты старше N дней; 0 = не удалять
+RETENTION_CLEAR_DAYS=14
+# Удалять любые инциденты старше N дней; 0 = не удалять
+RETENTION_INCIDENT_DAYS=0
+MAINTENANCE_INTERVAL_SEC=3600
+MAX_STORED_DETECTIONS=200
+
+# --- Внешние сервисы (без ключей) ------------------------------------------
 OPEN_METEO_URL=https://api.open-meteo.com/v1/forecast
 NOMINATIM_URL=https://nominatim.openstreetmap.org/reverse
 NOMINATIM_USER_AGENT=kedr-fire-monitor/1.0 (contact: change-me@your-domain.com)
 
-# --- Overpass / кэш (item 4: ускорение создания инцидента) ---
-OVERPASS_URLS=https://maps.mail.ru/osm/tools/overpass/api/interpreter
-OVERPASS_TIMEOUT=20              # секунд на запрос к зеркалу; следующее зеркало берётся при ошибке
-OVERPASS_CONCURRENCY=4           # одновременных запросов к Overpass
-CACHE_MAX=4000                   # максимум записей в in-process TTL-кэше
-WEATHER_TTL=600                  # сек: кэш погоды Open-Meteo
-GEOCODE_TTL=86400                # сек: кэш обратного геокодирования Nominatim
-NEAR_TTL=86400                    # сек: кэш населённых пунктов и landuse (nearby)
-INFRA_TTL=86400                   # сек: кэш объектов инфраструктуры (item 7)
-SEARCH_TTL=3600                  # сек: кэш поиска населённых пунктов
-CLEAR_DEDUPE_KM=0.5              # км: радиус схлопывания повторных CLEAR-детекций
+# --- Overpass / кэш --------------------------------------------------------
+OVERPASS_URLS=https://overpass-api.de/api/interpreter,https://maps.mail.ru/osm/tools/overpass/api/interpreter
+OVERPASS_TIMEOUT=12
+OVERPASS_CONCURRENCY=4
+# Здоровье зеркал: упавшее зеркало уходит в охлаждение (fails * BASE, не больше MAX)
+OVERPASS_COOLDOWN_BASE=30
+OVERPASS_COOLDOWN_MAX=300
+# Сколько секунд не повторять заведомо упавший запрос
+OVERPASS_NEGATIVE_TTL=60
+# Жёсткий дедлайн на внешние сервисы при создании инцидента, секунды
+ENRICH_DEADLINE_SEC=20
+CACHE_MAX=4000
+WEATHER_TTL=600
+GEOCODE_TTL=86400
+NEAR_TTL=86400
+SEARCH_TTL=3600
+CLEAR_DEDUPE_KM=0.5
 
-# --- Демо-данные (только dev) ---
-SEED_ON_STARTUP=true
-SEED_PASSWORD=123456
-
-
-# Радиус поиска реально опасных объектов (АЭС, ГЭС, НПЗ, химзаводы).
-# Обычные ТЭЦ/подстанции/аэродромы ищутся в радиусе HAZARD_RADIUS_M.
+# Радиусы поиска опасных объектов
 CRITICAL_RADIUS_M=30000
 HAZARD_RADIUS_M=15000
+
+# --- Демо-данные ------------------------------------------------------------
+# В dev демо-аккаунты создаются автоматически. Перед продакшеном удалите их:
+#     docker compose exec backend python -m scripts.manage delete-demo-users
+SEED_ON_STARTUP=true
+SEED_PASSWORD=kedr-demo-1234
+# В production сидирование требует ЭТОГО флага (защита от случайного включения)
+SEED_ALLOW_IN_PRODUCTION=false
+
+# --- Изображения: не хранить полный вес ---------------------------------------
+IMAGE_MAX_WIDTH=1600            # ширина после ресайза, px
+IMAGE_JPEG_QUALITY=82           # качество JPEG
+THUMB_WIDTH=320                 # миниатюра для списков и попапов
+
+# --- Черновики анализа (загрузка -> подтверждение места -> инцидент) ----------
+DRAFT_TTL_SEC=1800              # сколько живёт черновик до автоудаления
+
+# --- Спутниковые очаги (NASA FIRMS) -------------------------------------------
+# Ключ: https://firms.modaps.eosdis.nasa.gov/api/map_key/
+FIRMS_MAP_KEY=
+FIRMS_SOURCE=VIIRS_SNPP_NRT
+FIRMS_BBOX=19,41,180,82         # запад,юг,восток,север (вся Россия)
+FIRMS_DAYS=1
+FIRMS_MIN_CONFIDENCE=0          # 0..1, отсекать слабые детекции
+FIRMS_DEDUPE_KM=1.0
+FIRMS_POLL_MINUTES=0            # 0 = опрос выключен; иначе период в минутах
+
+# --- Логи ------------------------------------------------------------------
+LOG_LEVEL=INFO

@@ -8,12 +8,17 @@ frontend/.env
 # --- Данные БД и загрузки ---
 backend/data/kedr.db
 *.db
+*.db-shm
+*.db-wal
 *.sqlite
 *.sqlite3
 backend/uploads/**
 !backend/uploads/
 !backend/uploads/**/
 !backend/uploads/**/.gitkeep
+
+# --- Локальный dev-секрет (генерируется автоматически) ---
+backend/data/dev_secret.key
 
 # --- Веса моделей (тяжёлые, качаются отдельно) ---
 backend/weights/**
