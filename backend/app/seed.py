@@ -1,21 +1,33 @@
-"""Idempotent first-boot seeder: demo users and Siberian settlements. Dev use only."""
+"""Idempotent first-boot seeder: demo users and the Russian settlement dataset.
+
+Demo accounts are ordinary rows in the `users` table flagged `is_demo = true`.
+They are seeded only when explicitly allowed (see config.seed_enabled) and can be
+removed at any time with:
+
+    python -m scripts.manage delete-demo-users
+"""
+from __future__ import annotations
+
 import json
+import logging
 import os
 from pathlib import Path
 
-from passlib.context import CryptContext
+from .config import is_production, seed_enabled
+from .models import Role, SessionLocal, Settlement, User, init_db
+from .security import hash_password
 
-from .models import Role, Settlement, SessionLocal, User, init_db
+log = logging.getLogger("kedr.seed")
 
-pwd = CryptContext(schemes=["bcrypt"], deprecated="auto")
-
-USERS = [
+# (email, full_name, role) — password comes from SEED_PASSWORD
+DEMO_USERS = [
     ("citizen@kedr.ru", "Гражданин", Role.CITIZEN),
     ("forester@kedr.ru", "Лесничий", Role.FORESTER),
     ("mchs@kedr.ru", "Диспетчер МЧС", Role.MCHS),
 ]
+DEMO_DEFAULT_PASSWORD = "kedr-demo-1234"  # must satisfy the password policy
 
-# (name, name_en, region, lat, lon, population) — approximate demo values
+# (name, name_en, region, lat, lon, population) — fallback when ru_cities.json is absent
 SETTLEMENTS = [
     ("Красноярск", "Krasnoyarsk", "Красноярский край", 56.0153, 92.8932, 1190000),
     ("Дивногорск", "Divnogorsk", "Красноярский край", 55.9556, 92.3700, 29000),
@@ -61,42 +73,55 @@ SETTLEMENTS = [
 ]
 
 
+def seed_demo_users(db, password: str | None = None) -> list[str]:
+    """Create the demo accounts if they are missing. Returns the created emails."""
+    created: list[str] = []
+    password = password or os.getenv("SEED_PASSWORD") or DEMO_DEFAULT_PASSWORD
+    if is_production() and password == DEMO_DEFAULT_PASSWORD:
+        raise RuntimeError(
+            "Refusing to create demo accounts in production with the default password. "
+            "Set a strong SEED_PASSWORD or disable seeding (SEED_ON_STARTUP=false)."
+        )
+    for email, full_name, role in DEMO_USERS:
+        if db.query(User).filter(User.email == email).first():
+            continue
+        db.add(User(email=email, full_name=full_name, role=role, is_demo=True,
+                    hashed_password=hash_password(password)))
+        created.append(email)
+    if created:
+        log.warning("Seeded %d demo account(s): %s — remove them with "
+                    "`python -m scripts.manage delete-demo-users` before going live.",
+                    len(created), ", ".join(created))
+    return created
+
+
+def _load_settlements(db) -> None:
+    try:
+        data_path = Path(__file__).parent / "data" / "ru_cities.json"
+        if data_path.exists():
+            data = json.loads(data_path.read_text(encoding="utf-8"))
+            cities = [c for c in data["cities"] if (c.get("p") or 0) >= 5000]
+            db.add_all(
+                Settlement(name=c["n"], name_en=c.get("a") or "", region=c.get("r") or "",
+                           lat=c["lat"], lon=c["lon"], population=c.get("p") or 0)
+                for c in cities
+            )
+            log.info("loaded %d settlements from ru_cities.json", len(cities))
+            return
+    except Exception as exc:
+        log.warning("ru_cities.json unavailable (%s); using the built-in list", exc)
+    db.add_all(
+        Settlement(name=n, name_en=en, region=rg, lat=la, lon=lo, population=p)
+        for n, en, rg, la, lo, p in SETTLEMENTS
+    )
+    log.info("loaded %d settlements from the built-in list", len(SETTLEMENTS))
+
+
 def seed() -> None:
     init_db()
-    password = os.getenv("SEED_PASSWORD", "123456")
     with SessionLocal() as db:
-        if not db.query(User).first():
-            hashed = pwd.hash(password)
-            db.add_all(User(email=e, full_name=n, role=r, hashed_password=hashed) for e, n, r in USERS)
+        if seed_enabled():
+            seed_demo_users(db)
         if not db.query(Settlement).first():
-            # Try to load from ru_cities.json for comprehensive coverage
-            try:
-                data_path = Path(__file__).parent / "data" / "ru_cities.json"
-                if data_path.exists():
-                    data = json.loads(data_path.read_text(encoding="utf-8"))
-                    # Only cities with population >= 5000 to avoid overwhelming the database
-                    cities = [c for c in data["cities"] if (c.get("p") or 0) >= 5000]
-                    db.add_all(
-                        Settlement(
-                            name=c["n"], name_en=c.get("a") or "",
-                            region=c.get("r") or "",
-                            lat=c["lat"], lon=c["lon"],
-                            population=c.get("p") or 0,
-                        )
-                        for c in cities
-                    )
-                    print(f"[kedr] seed: loaded {len(cities)} settlements from ru_cities.json")
-                else:
-                    # Fallback to hardcoded list
-                    db.add_all(
-                        Settlement(name=n, name_en=en, region=rg, lat=la, lon=lo, population=p)
-                        for n, en, rg, la, lo, p in SETTLEMENTS
-                    )
-                    print(f"[kedr] seed: loaded {len(SETTLEMENTS)} settlements from hardcoded list")
-            except Exception as e:
-                print(f"[kedr] seed: failed to load ru_cities.json, using fallback: {e}")
-                db.add_all(
-                    Settlement(name=n, name_en=en, region=rg, lat=la, lon=lo, population=p)
-                    for n, en, rg, la, lo, p in SETTLEMENTS
-                )
+            _load_settlements(db)
         db.commit()

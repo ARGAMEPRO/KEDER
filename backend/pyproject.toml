@@ -1,0 +1,22 @@
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "C4", "UP", "SIM", "RET", "PIE"]
+ignore = [
+  "E501",   # long lines are handled by the formatter
+  "B008",   # FastAPI's Depends()/File() in defaults is the documented pattern
+  "SIM108", # ternaries are not always clearer
+  "RET504", # explicit intermediate values aid readability
+  "UP038",  # isinstance tuple vs | is a py3.10 nuance
+  "SIM105", # try/except/pass with an explanatory comment is clearer
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["B011", "E402"]
+"alembic/*" = ["E402", "F401"]
+"scripts/*" = ["E402"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["app"]
