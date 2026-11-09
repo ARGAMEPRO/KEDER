@@ -1,7 +1,7 @@
 # КЕДР — мониторинг лесных пожаров
 
 Веб-платформа для раннего обнаружения лесных пожаров: детекция огня и дыма нейросетью
-YOLOv8, расчёт зоны распространения огня, оценка угрозы населённым пунктам и
+YOLOv11, расчёт зоны распространения огня, оценка угрозы населённым пунктам и
 критической инфраструктуре, формирование PDF-донесений и оповещение диспетчеров МЧС.
 
 - **Backend** — FastAPI + PostgreSQL (SQLite как zero-config fallback) + Alembic.
@@ -32,7 +32,7 @@ YOLOv8, расчёт зоны распространения огня, оцен�
 
 ## Возможности
 
-- 🔥 **Детекция огня и дыма** на фото и видео (YOLOv8), покадровая обработка видео и RTSP-потоков.
+- 🔥 **Детекция огня и дыма** на фото и видео (YOLOv11), покадровая обработка видео и RTSP-потоков.
 - 🎚️ **Раздельные пороги для дыма и огня**: дым — раннее предупреждение, поэтому его пороги строже.
 - 🗺️ **Карта очагов** по России с поиском любого населённого пункта (локальный справочник + Nominatim).
 - 🌬️ **Расчёт зоны распространения** с учётом ветра, влажности, температуры, уклона и типа топлива.
@@ -86,7 +86,7 @@ TORCH_VARIANT=cpu
 ### Шаги
 
 ```bash
-git clone https://github.com/ARGAMEPRO/KEDR.git
+git clone https://github.com/ARGAMEPRO/KEDER.git
 cd KEDR
 cp _env.example .env
 ```
@@ -121,6 +121,37 @@ docker compose logs -f backend
 
 ---
 
+### Что обязательно ввести в `.env`
+
+| Что | Зачем | Обязательно? |
+|---|---|---|
+| `POSTGRES_PASSWORD` | пароль базы, compose без него не стартует | **да** |
+| `GEOAPIFY_KEY` | инфраструктура вокруг очага: больницы, пожарные, АЭС, НПЗ | очень желательно |
+| веса `best.pt` в `backend/weights/` | детекция огня и дыма на фото и видео | нет, но без них анализ отключён |
+
+**Ключ Geoapify:** https://myprojects.geoapify.com → Create project → скопировать API key.
+Бесплатно 3000 кредитов в сутки (≈1500 запросов инфраструктуры), карта не нужна, только e-mail.
+Вставьте строкой `GEOAPIFY_KEY=ваш_ключ` — без кавычек и пробелов.
+
+Остальные ключи (`TWOGIS_KEY`, `OPENWEATHER_KEY`) — необязательные резервы, приложение работает и без них.
+`SECRET_KEY` в `dev` можно оставить пустым.
+
+### Проверка, что всё поднялось (30 секунд)
+
+```bash
+curl -s http://localhost:5173/api/v1/health
+# {"status":"ok","model":true,...}  — model:true значит веса загружены
+
+curl -s "http://localhost:5173/api/v1/geo/infrastructure?lat=55.75&lon=37.62&radius_m=15000" \
+  | head -c 300
+# должны прийти facilities и "source":"geoapify" (или "osm")
+```
+
+Если карточка инфраструктуры пустая — проверьте `GEOAPIFY_KEY` в `.env` и перезапустите backend:
+`docker compose up -d --force-recreate backend` (после правки `.env` обычный `up -d` может не подхватить значения).
+
+---
+
 ## Как добавить веса нейросети
 
 Без весов сайт работает полностью, кроме анализа изображений: `/analyze` вернёт
@@ -133,7 +164,7 @@ docker compose logs -f backend
 ### Вариант А — положить файл (рекомендуется)
 
 ```bash
-cp yolov8x-fire.pt backend/weights/yolov8x-fire.pt
+cp best.pt backend/weights/best.pt
 ```
 
 Файл сразу виден контейнеру (каталог `backend/weights` смонтирован в `/backend/weights`).
@@ -142,14 +173,14 @@ cp yolov8x-fire.pt backend/weights/yolov8x-fire.pt
 ### Вариант Б — автозагрузка по ссылке
 
 ```dotenv
-YOLO_WEIGHTS_URL=https://example.com/yolov8x-fire.pt
+YOLO_WEIGHTS_URL=https://example.com/best.pt
 YOLO_WEIGHTS_SHA256=<sha256 файла>      # настоятельно рекомендуется
 ```
 
 Файл скачается при старте. **Обязательно указывайте `YOLO_WEIGHTS_SHA256`**: файл `.pt` —
 это pickle, и загрузка непроверенных весов равносильна выполнению произвольного кода.
 
-Получить хеш: `sha256sum yolov8x-fire.pt`
+Получить хеш: `sha256sum best.pt`
 
 ### Если модель не нужна на этой машине
 
@@ -304,7 +335,7 @@ npm run build
 | `DATABASE_URL` | явный URL, имеет приоритет. SQLite: `sqlite:///./kedr.db` | собирается автоматически |
 | `ACCESS_TOKEN_EXPIRE_MINUTES` | время жизни токена | `720` |
 | `MIN_PASSWORD_LEN` | минимальная длина пароля (плюс буква и цифра) | `8` |
-| `YOLO_WEIGHTS` | путь к весам | `weights/yolov8x-fire.pt` |
+| `YOLO_WEIGHTS` | путь к весам | `weights/best.pt` |
 | `YOLO_WEIGHTS_URL` / `YOLO_WEIGHTS_SHA256` | автозагрузка и её контрольная сумма | пусто |
 | `YOLO_DEVICE` | `auto` / `cpu` / `cuda:0` | `auto` |
 | `TIER_PENDING`, `TIER_CRITICAL` | пороги эскалации для огня | `0.40`, `0.80` |
@@ -488,7 +519,7 @@ python -m scripts.import_firms --bbox 60,50,120,75 --days 1        # разов�
 | `SECRET_KEY ... Refusing to start` | в `production` задайте стойкий `SECRET_KEY` (≥32 символа) |
 | `Cannot connect to the Docker daemon` | запустите Docker Desktop |
 | Порт 5173 занят | поменяйте в `docker-compose.yml`: `"5174:80"` |
-| `health` показывает `"model": false` | положите `yolov8x-fire.pt` в `backend/weights/` (перезапуск не нужен) |
+| `health` показывает `"model": false` | положите `best.pt` в `backend/weights/` (перезапуск не нужен) |
 | `503 Веса модели не найдены` | то же самое; проверьте `YOLO_WEIGHTS` |
 | `503 ultralytics/torch не установлена` | установите зависимости из `backend/requirements.txt` |
 | Анализ очень медленный | нет GPU: `YOLO_DEVICE` определится как `cpu`. Так и задумано |
