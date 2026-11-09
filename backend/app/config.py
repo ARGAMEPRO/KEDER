@@ -214,7 +214,7 @@ def weights_path() -> str:
     "no weights found" for a file that is plainly there is a bad failure mode.
     """
     weights_dir = _resolve_path(os.getenv("WEIGHTS_DIR") or "weights")
-    configured = (os.getenv("YOLO_WEIGHTS") or "").strip() or str(weights_dir / "yolov8x-fire.pt")
+    configured = (os.getenv("YOLO_WEIGHTS") or "").strip() or str(weights_dir / "best.pt")
     path = _resolve_path(configured)
     if path.exists():
         return str(path)

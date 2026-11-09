@@ -50,7 +50,7 @@ POSTGRES_PASSWORD=change-me-postgres-password
 
 # --- Детекция (YOLO) --------------------------------------------------------
 # Путь к весам. Если файла нет, берётся любой *.pt из каталога weights/.
-YOLO_WEIGHTS=weights/yolov8x-fire.pt
+YOLO_WEIGHTS=weights/best.pt
 # Ссылка на .pt для автозагрузки при первом старте (необязательно).
 YOLO_WEIGHTS_URL=
 # Контрольная сумма SHA-256 файла весов (настоятельно рекомендуется).
