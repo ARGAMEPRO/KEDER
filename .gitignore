@@ -54,3 +54,6 @@ logs/repomix-2.xml
 backend/data/*.sqlite
 backend/data/*.sqlite-wal
 backend/data/*.sqlite-shm
+
+# Obsidian vault (личные настройки просмотра README)
+.obsidian/
