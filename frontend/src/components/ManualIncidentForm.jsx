@@ -1,13 +1,13 @@
 import { useEffect, useState } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
-import { AlertTriangle, Camera, Check, MapPin, ShieldCheck, Sparkles } from 'lucide-react'
+import { Camera, MapPin, ShieldCheck, Sparkles } from 'lucide-react'
 import { api } from '../api'
 import { Btn, Card, spring } from '../ui'
 
 /** Step-style manual incident form (21st.dev-inspired glass card flow). */
 export default function ManualIncidentForm({ t, pick, role, onDone, onNeedPick }) {
   const [file, setFile] = useState(null), [preview, setPreview] = useState(''), [busy, setBusy] = useState(false), [err, setErr] = useState('')
-  const [verdict, setVerdict] = useState('confirm'), [override, setOverride] = useState(false)
+  const [override, setOverride] = useState(false)
   const forester = role === 'forester', mchs = role === 'mchs'
 
   // Never leak the object URL of the preview.
@@ -27,8 +27,7 @@ export default function ManualIncidentForm({ t, pick, role, onDone, onNeedPick }
         const fd = new FormData()
         fd.append('lat', pick[0]); fd.append('lon', pick[1])
         if (file) fd.append('file', file)
-        if (mchs) fd.append('verdict', verdict)
-        else if (forester && override) fd.append('verdict', 'confirm')
+        if (forester && override) fd.append('verdict', 'confirm')
         await api('/incidents/manual-photo', { body: fd, timeoutMs: 300000 })
       } else {
         await api('/incidents/manual', { json: { lat: pick[0], lon: pick[1] }, timeoutMs: 180000 })
@@ -82,23 +81,6 @@ export default function ManualIncidentForm({ t, pick, role, onDone, onNeedPick }
                 <ShieldCheck className="h-4 w-4 text-primary" aria-hidden />
                 <span className="text-sm font-semibold">{t.forester_override}</span>
               </label>
-            </div>
-          </li>
-        )}
-        {mchs && (
-          <li className="flex gap-3">
-            {step(3)}
-            <div className="min-w-0 flex-1 space-y-2">
-              <p className="font-semibold">{t.verdict_title}</p>
-              <p className="text-xs text-muted-foreground">{t.verdict_hint}</p>
-              <div className="flex gap-2" role="radiogroup" aria-label={t.verdict_title}>
-                {[['confirm', t.verdict_confirm, Check], ['critical', t.verdict_critical, AlertTriangle]].map(([v, label, Icon]) => (
-                  <button key={v} type="button" role="radio" aria-checked={verdict === v} onClick={() => setVerdict(v)}
-                    className={`flex min-h-11 flex-1 cursor-pointer items-center justify-center gap-2 rounded-xl border px-3 text-sm font-semibold ${verdict === v ? (v === 'critical' ? 'border-tomato bg-tomato/10 text-tomato' : 'border-ring bg-muted') : 'border-border/60 text-muted-foreground hover:bg-muted'}`}>
-                    <Icon className="h-4 w-4" aria-hidden />{label}
-                  </button>
-                ))}
-              </div>
             </div>
           </li>
         )}

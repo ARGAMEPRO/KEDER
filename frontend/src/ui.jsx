@@ -65,11 +65,11 @@ export function Tabs({ tabs, value, onChange, id }) {
     else if (e.key === 'End') { e.preventDefault(); move(tabs.length - 1 - tabs.findIndex(([k]) => k === value)) }
   }
   return (
-    <div role="tablist" className="flex gap-1 rounded-full bg-muted p-1">
+    <div role="tablist" className="flex gap-1 overflow-x-auto rounded-full bg-muted p-1 [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
       {tabs.map(([k, label], i) => (
         <button key={k} ref={(el) => { refs.current[i] = el }} role="tab" id={`${id}-tab-${k}`}
           aria-selected={value === k} tabIndex={value === k ? 0 : -1} onKeyDown={onKeyDown}
-          onClick={() => onChange(k)} className="relative min-h-11 flex-1 cursor-pointer rounded-full px-4 text-sm font-semibold">
+          onClick={() => onChange(k)} className="relative min-h-11 shrink-0 cursor-pointer whitespace-nowrap rounded-full px-3 text-[13px] font-semibold">
           {value === k && <motion.span layoutId={id} transition={spring} className="absolute inset-0 rounded-full bg-card shadow-soft" />}
           <span className="relative">{label}</span>
         </button>

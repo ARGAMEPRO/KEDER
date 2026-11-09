@@ -78,7 +78,7 @@ export default function Landing({ t, onTry }) {
             <ul className="mt-3 space-y-1 text-sm">{[['features', t.n1], ['how', t.n2], ['contacts', t.n3]].map(([id, l]) => (
               <li key={id}><motion.button whileHover={{ x: '0.25rem' }} className="min-h-11 cursor-pointer text-left" onClick={() => jump(id)}>{l}</motion.button></li>))}</ul></nav>
           <div className="md:text-right"><p className="font-mono text-micro uppercase text-leaf">{t.foot_ver}</p>
-            <span className="mt-3 inline-flex items-center gap-2 rounded-xl bg-black/40 px-3 py-2 font-mono text-xs"><StatusDot status="PENDING_VERIFICATION" /> v1.2 · YOLOv8</span></div>
+            <span className="mt-3 inline-flex items-center gap-2 rounded-xl bg-black/40 px-3 py-2 font-mono text-xs"><StatusDot status="PENDING_VERIFICATION" /> v1.2 · YOLOv11</span></div>
         </div>
         <p className="mx-auto mt-10 max-w-6xl text-xs text-white/60">© 2026 КЕДР. {t.rights}</p>
       </footer>

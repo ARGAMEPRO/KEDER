@@ -37,7 +37,7 @@ function ReviewCard({ i, t, busy, review, setSel }) {
         <img src={i.annotated_url || `/uploads/${i.annotated_path}`} alt="" loading="lazy"
           className="aspect-video w-full rounded-xl object-cover" />
       )}
-      <div className="flex items-center justify-between"><Badge status={i.status}>{t['s_' + i.status]}</Badge><span className="font-mono text-sm">{i.source_ai} {pct(i.confidence)}</span></div>
+      <div className="flex items-center justify-between"><Badge status={i.status}>{t['s_' + i.status]}</Badge><span className="font-mono text-sm">{i.source === 'MANUAL' ? t.source_manual : `${t.source_ai} ${pct(i.confidence)}`}</span></div>
       {i.lat != null ? <Coord i={i} t={t} /> : <p className="text-sm text-destructive">{t.no_gps}</p>}
       <div className="flex flex-wrap gap-2">
         <Btn disabled={busy === i.id} onClick={() => act('confirm')}><Check className="h-4 w-4" aria-hidden />{t.confirm}</Btn>
