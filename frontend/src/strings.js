@@ -1,6 +1,6 @@
 export const extra = {
   ru: {
-    map_fail: 'Не удалось запустить карту. Проверьте, что в браузере включён WebGL и есть доступ к tile.openstreetmap.org.', err_title: 'Что-то пошло не так на этой странице.', model_off: 'Модель обнаружения не загружена, поэтому анализ временно недоступен. Администратору: положите веса в backend/weights/yolov8x-fire.pt или задайте YOLO_WEIGHTS_URL.',
+    map_fail: 'Не удалось запустить карту. Проверьте, что в браузере включён WebGL и есть доступ к tile.openstreetmap.org.', err_title: 'Что-то пошло не так на этой странице.', model_off: 'Модель обнаружения не загружена, поэтому анализ временно недоступен. Администратору: положите веса в backend/weights/best.pt или задайте YOLO_WEIGHTS_URL.',
     tab_upload: 'Загрузка', tab_queue: 'Очередь', tab_hot: 'Очаги', tab_new: 'Новый', open_map: 'На карте', peek: 'Список очагов', skip: 'К основному содержимому', close: 'Закрыть',
     nav_home: 'Главная', nav_analyze: 'Анализ', nav_map: 'Карта', nav_dash: 'Панель',
     hero_badge: 'Спутниковый и дронный ИИ-мониторинг', hero_title: 'Интеллектуальный мониторинг лесных пожаров',
@@ -84,7 +84,7 @@ export const extra = {
     round_the_clock: 'Круглосуточно', beds_short: 'мест',
   },
   en: {
-    map_fail: 'The map could not start. Check that WebGL is enabled and tile.openstreetmap.org is reachable.', err_title: 'Something went wrong on this page.', model_off: 'The detection model is not loaded, so analysis is unavailable. Admin: put weights at backend/weights/yolov8x-fire.pt or set YOLO_WEIGHTS_URL.',
+    map_fail: 'The map could not start. Check that WebGL is enabled and tile.openstreetmap.org is reachable.', err_title: 'Something went wrong on this page.', model_off: 'The detection model is not loaded, so analysis is unavailable. Admin: put weights at backend/weights/best.pt or set YOLO_WEIGHTS_URL.',
     tab_upload: 'Upload', tab_queue: 'Queue', tab_hot: 'Hotspots', tab_new: 'New', open_map: 'On map', peek: 'Hotspot list', skip: 'Skip to main content', close: 'Close',
     nav_home: 'Home', nav_analyze: 'Analysis', nav_map: 'Map', nav_dash: 'Dashboard',
     hero_badge: 'Satellite & drone AI monitoring', hero_title: 'Intelligent forest fire monitoring',

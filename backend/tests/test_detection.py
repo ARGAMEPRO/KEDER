@@ -179,5 +179,5 @@ def test_default_weights_path_is_cwd_independent(tmp_path, monkeypatch):
     monkeypatch.delenv("YOLO_WEIGHTS", raising=False)
     path = config.weights_path()
     assert os.path.isabs(path)
-    assert os.path.basename(path) == "yolov8x-fire.pt"
+    assert os.path.basename(path) == "best.pt"
     assert Path(path).parent == Path(os.environ["WEIGHTS_DIR"])

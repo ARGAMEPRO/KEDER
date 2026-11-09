@@ -92,7 +92,7 @@ def get_model():
     """Load YOLO weights on first use.
 
     Weights may be added after the server has started (the operator drops
-    `yolov8x-fire.pt` into the weights volume), so this deliberately re-checks
+    `best.pt` into the weights volume), so this deliberately re-checks
     the filesystem instead of caching a failure.
     """
     global _model, _model_path, MODEL_IMPORT_ERROR

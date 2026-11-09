@@ -69,7 +69,7 @@ def test_video_upload_requires_authentication(client, stub_analyze):
 
 def test_report_503_when_model_missing(client, monkeypatch):
     def boom(*a, **k):
-        raise RuntimeError("Веса модели не найдены: weights/yolov8x-fire.pt")
+        raise RuntimeError("Веса модели не найдены: weights/best.pt")
 
     monkeypatch.setattr("app.services.analyze", boom)
     r = client.post("/api/v1/incidents/report", files=_photo())
