@@ -15,6 +15,7 @@ import base64
 import hashlib
 import heapq
 import io
+from xml.sax.saxutils import escape
 import json
 import logging
 import math
@@ -1745,7 +1746,9 @@ def _map_png(lat: float, lon: float, size=(660, 380), z: int = 13) -> bytes:
 
     from PIL import Image, ImageDraw
 
-    tile_url = "https://core-renderer-tiles.maps.yandex.net/tiles"
+    # OSM отдаёт тайлы в Web Mercator: метка на карте совпадает с координатами.
+    # Яндекс использует EPSG:3395 — на широте Москвы подложка уезжает на ~35 км.
+    tile_url = "https://tile.openstreetmap.org/{z}/{x}/{y}.png"
     n = 2 ** z
     rad = math.radians(max(-85.05, min(85.05, lat)))
     px = (lon + 180.0) / 360.0 * n * 256
@@ -1759,8 +1762,7 @@ def _map_png(lat: float, lon: float, size=(660, 380), z: int = 13) -> bytes:
         for tx in range(tx0, tx1 + 1):
             for ty in range(ty0, ty1 + 1):
                 try:
-                    r = client.get(tile_url, params={"l": "map", "x": tx, "y": ty, "z": z,
-                                                     "scale": 1, "lang": "ru_RU"})
+                    r = client.get(tile_url.format(z=z, x=tx, y=ty))
                     if r.status_code == 200:
                         canvas.paste(Image.open(io.BytesIO(r.content)).convert("RGB"),
                                      ((tx - tx0) * 256, (ty - ty0) * 256))
@@ -1781,7 +1783,7 @@ def _map_png(lat: float, lon: float, size=(660, 380), z: int = 13) -> bytes:
 def make_pdf(i, uploads) -> bytes:
     from reportlab.lib import colors
     from reportlab.lib.pagesizes import A4
-    from reportlab.lib.styles import getSampleStyleSheet
+    from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
     from reportlab.lib.units import mm
     from reportlab.platypus import Image as RLImage
     from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
@@ -1790,24 +1792,34 @@ def make_pdf(i, uploads) -> bytes:
     ss = getSampleStyleSheet()
     for k in ("Normal", "Title", "Heading2"):
         ss[k].fontName = font
-    style = TableStyle([("FONTNAME", (0, 0), (-1, -1), font), ("FONTSIZE", (0, 0), (-1, -1), 9),
-                        ("GRID", (0, 0), (-1, -1), 0.4, colors.grey)])
+    BRAND, INK, MUTED = colors.HexColor("#1F6F3F"), colors.HexColor("#1a1f24"), colors.HexColor("#6b7280")
+    cell = ParagraphStyle("cell", parent=ss["Normal"], fontName=font, fontSize=8.5, leading=10.5, textColor=INK)
+    cell_b = ParagraphStyle("cellb", parent=cell, fontName=font, textColor=colors.white, fontSize=8.5)
+    h2 = ParagraphStyle("h2", parent=ss["Heading2"], fontName=font, fontSize=11.5, leading=14,
+                        textColor=BRAND, spaceBefore=4, spaceAfter=3)
+
+    def P(text, style=cell):
+        return Paragraph(escape(str(text)), style)
+
     props = i.hazard_geojson.get("properties", {}) if isinstance(i.hazard_geojson, dict) else {}
     fuel = {"forest": "лес", "urban": "город/посёлок", "mixed": "смешанная"}.get(props.get("fuel"), "—")
+    ai_done = str(getattr(i.source, "value", i.source)) != "MANUAL"
     info = [["GPS", f"{i.lat:.6f}, {i.lon:.6f}"], ["Местность", i.region_name or "—"],
             ["Источник координат", i.gps_source.value if i.gps_source else "—"],
             ["Топливо (зона)", fuel],
-            ["Время сканирования (UTC)", i.created_at.strftime("%Y-%m-%d %H:%M:%S")],
-            ["Уверенность ИИ", f"{i.confidence * 100:.1f}%"],
-            ["Ветер", f"{i.wind_speed_ms} м/с, {i.wind_dir_deg}°" if i.wind_speed_ms is not None else "нет данных"],
-            ["Температура / влажность", f"{i.temp_c} °C / {i.humidity_pct} %" if i.temp_c is not None else "нет данных"]]
+            ["Время сканирования (UTC)", i.created_at.strftime("%Y-%m-%d %H:%M:%S")]]
+    if ai_done:  # у ручного инцидента ИИ не работал — уверенности нет
+        info.append(["Уверенность ИИ", f"{i.confidence * 100:.1f}%"])
+    else:
+        info.append(["Источник", "Ручной ввод оператора"])
+    info.append(["Ветер", f"{i.wind_speed_ms} м/с, {i.wind_dir_deg}°" if i.wind_speed_ms is not None else "нет данных"])
+    info.append(["Температура / влажность", f"{i.temp_c} °C / {i.humidity_pct} %" if i.temp_c is not None else "нет данных"])
     if props.get("max_criticality", 0) >= 4:
         info.append(["Критические объекты", f"Уровень опасности: {props.get('max_criticality', 0)}"])
     if i.evacuation and isinstance(i.evacuation[0], dict) and i.evacuation[0].get("nearest_aid"):
         aid = ", ".join(f"{a['kind']}: {a['name']} ({a['distance_km']} км)" for a in i.evacuation[0]["nearest_aid"][:2])
         info.append(["Ближайшая помощь", aid])
 
-    # Fire-behaviour block from the physical model (Rothermel / Byram).
     if props.get("ros_m_per_min") is not None:
         info += [["Топливная модель", str(props.get("fuel_model", "—"))],
                  ["Влажность топлива", f"{props.get('fuel_moisture', 0) * 100:.1f} %"],
@@ -1819,30 +1831,75 @@ def make_pdf(i, uploads) -> bytes:
                  ["Размер очага", f"{props.get('diameter_m')} м в диаметре, "
                                   f"{props.get('area_ha')} га, периметр {props.get('perimeter_km')} км"]]
 
-    ev = [["Населённый пункт", "Население", "Расстояние, км", "Азимут, °", "Эвакуация, °"]] + \
-         [[str(r.get("name", "")), r.get("population") if r.get("population") is not None else "н/д",
-           r.get("distance_km", ""), r.get("bearing", ""), r.get("evac_bearing", "")]
-          for r in (i.evacuation or []) if isinstance(r, dict) and "distance_km" in r]
+    ev_rows = [[P("Населённый пункт", cell_b), P("Население", cell_b), P("Расстояние, км", cell_b),
+                P("Азимут, °", cell_b), P("Эвакуация, °", cell_b)]]
+    ev_rows += [[P(r.get("name", "")), P(r.get("population") if r.get("population") is not None else "н/д"),
+                 P(r.get("distance_km", "")), P(r.get("bearing", "")), P(r.get("evac_bearing", ""))]
+                for r in (i.evacuation or []) if isinstance(r, dict) and "distance_km" in r]
+    if len(ev_rows) == 1:
+        ev_rows.append([P("Угрожаемых пунктов нет"), P(""), P(""), P(""), P("")])
 
-    story = [Paragraph(f"Донесение о лесном пожаре № {i.id}", ss["Title"])]
+    ev_style = TableStyle([
+        ("FONTNAME", (0, 0), (-1, -1), font), ("FONTSIZE", (0, 0), (-1, -1), 8.5),
+        ("BACKGROUND", (0, 0), (-1, 0), BRAND), ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+        ("GRID", (0, 0), (-1, -1), 0.4, colors.HexColor("#c9d3cb")),
+        ("VALIGN", (0, 0), (-1, -1), "TOP"), ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#f4f7f4")]),
+        ("TOPPADDING", (0, 0), (-1, -1), 3), ("BOTTOMPADDING", (0, 0), (-1, -1), 3)])
+    info_style = TableStyle([
+        ("FONTNAME", (0, 0), (-1, -1), font), ("FONTSIZE", (0, 0), (-1, -1), 8.5),
+        ("GRID", (0, 0), (-1, -1), 0.4, colors.HexColor("#c9d3cb")),
+        ("BACKGROUND", (0, 0), (0, -1), colors.HexColor("#eef3ee")),
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("TOPPADDING", (0, 0), (-1, -1), 3), ("BOTTOMPADDING", (0, 0), (-1, -1), 3)])
+    col_w = [62 * mm, 24 * mm, 28 * mm, 22 * mm, 26 * mm]
+
+    def header_footer(canvas, doc):
+        canvas.saveState()
+        w, h = A4
+        canvas.setFillColor(BRAND)
+        canvas.rect(0, h - 14 * mm, w, 14 * mm, stroke=0, fill=1)
+        canvas.setFillColor(colors.white)
+        canvas.setFont(font, 13)
+        canvas.drawString(18 * mm, h - 9.5 * mm, "КЕДР")
+        canvas.setFont(font, 8)
+        canvas.drawRightString(w - 18 * mm, h - 9 * mm, f"Донесение № {i.id} · {i.created_at.strftime('%d.%m.%Y')}")
+        canvas.setStrokeColor(colors.HexColor("#c9d3cb"))
+        canvas.setLineWidth(0.5)
+        canvas.line(18 * mm, 14 * mm, w - 18 * mm, 14 * mm)
+        canvas.setFillColor(MUTED)
+        canvas.setFont(font, 7.5)
+        canvas.drawString(18 * mm, 10 * mm, "КЕДР · комплекс мониторинга лесных пожаров")
+        canvas.drawRightString(w - 18 * mm, 10 * mm, f"стр. {doc.page}")
+        canvas.restoreState()
+
+    story = [Spacer(1, 6 * mm),
+             Paragraph(f"<font color='#1F6F3F'><b>Донесение о лесном пожаре № {i.id}</b></font>",
+                       ParagraphStyle("t", parent=ss["Title"], fontName=font, fontSize=17, leading=21, spaceAfter=2)),
+             Paragraph(f"{i.created_at.strftime('%d.%m.%Y %H:%M')} UTC · {escape(str(i.region_name or 'координаты без адреса'))}",
+                       ParagraphStyle("sub", parent=ss["Normal"], fontName=font, fontSize=9, textColor=MUTED)),
+             Spacer(1, 5 * mm)]
     img = (uploads / i.annotated_path) if i.annotated_path else None
     if img and img.exists():
         try:
-            story += [RLImage(str(img), width=170 * mm, height=95 * mm, kind="proportional"), Spacer(1, 6 * mm)]
+            story += [RLImage(str(img), width=174 * mm, height=97 * mm, kind="proportional"), Spacer(1, 4 * mm)]
         except Exception as exc:
             log.warning("pdf image could not be embedded: %s", exc)
     try:
-        map_png = _map_png(i.lat, i.lon)
-        story += [Paragraph("Карта района", ss["Heading2"]),
-                  RLImage(io.BytesIO(map_png), width=170 * mm, height=98 * mm),
-                  Paragraph("Картографическая подложка © Яндекс", ss["Normal"]), Spacer(1, 4 * mm)]
+        story += [Paragraph("Карта района", h2),
+                  RLImage(io.BytesIO(_map_png(i.lat, i.lon)), width=174 * mm, height=100 * mm),
+                  Paragraph("<font size=7 color='#6b7280'>Подложка © OpenStreetMap, участники OSM</font>", cell),
+                  Spacer(1, 4 * mm)]
     except Exception as exc:
         log.warning("pdf map could not be rendered: %s", exc)
-    story += [Table(info, colWidths=[60 * mm, 110 * mm], style=style), Spacer(1, 4 * mm)]
+    story += [Paragraph("Обстановка", h2),
+              Table([[P(a), P(b)] for a, b in info], colWidths=[58 * mm, 112 * mm], style=info_style), Spacer(1, 4 * mm)]
     if i.weather_fallback:
         story.append(Paragraph("Метеоданные недоступны на момент формирования отчёта.", ss["Normal"]))
-    story += [Paragraph("Таблица эвакуации", ss["Heading2"]),
-              Table(ev if len(ev) > 1 else ev + [["Угрожаемых пунктов нет", "", "", "", ""]], style=style)]
+    story += [Paragraph("Эвакуация", h2),
+              Table(ev_rows, colWidths=col_w, repeatRows=1, style=ev_style)]
     buf = io.BytesIO()
-    SimpleDocTemplate(buf, pagesize=A4, leftMargin=18 * mm, rightMargin=18 * mm).build(story)
+    doc = SimpleDocTemplate(buf, pagesize=A4, leftMargin=18 * mm, rightMargin=18 * mm,
+                            topMargin=20 * mm, bottomMargin=18 * mm,
+                            title=f"КЕДР — донесение № {i.id}", author="КЕДР")
+    doc.build(story, onFirstPage=header_footer, onLaterPages=header_footer)
     return buf.getvalue()
